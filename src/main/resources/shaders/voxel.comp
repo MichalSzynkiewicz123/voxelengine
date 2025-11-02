@@ -20,6 +20,7 @@ uniform float uTurbidity;       // ~2–3 clear, 6–8 hazy
 uniform vec3  uSkyZenith;       // fallback gradient top
 uniform vec3  uSkyHorizon;      // fallback gradient bottom
 uniform float uSkyIntensity;    // global sky multiplier
+uniform int   uSkySamples;      // hemisphere samples
 
 // Soft sun shadow params
 uniform float uSunAngularRadius; // radians (~0.00465)
@@ -194,7 +195,11 @@ float sunVisibility(vec3 pHit, vec3 n){
 
     vec3 T,B; makeONB(S, T, B);
     float halfAngle = uSunAngularRadius;
-    int   N = max(uSunSoftSamples, 1);
+    int   N = max(uSunSoftSamples, 0);
+    if (N <= 1){
+        bool oc = traverseHitAny(pHit + S*1e-3, S);
+        return oc ? 0.0 : 1.0;
+    }
 
     float vis = 0.0;
     for (int i=0; i<N; ++i){
@@ -211,8 +216,8 @@ float sunVisibility(vec3 pHit, vec3 n){
 
 // Torch visibility (soft via small emitter radius)
 float torchVisibilitySoft(vec3 pHit, vec3 Ldir, float dist){
-    int N = max(uTorchSoftSamples, 1);
-    if (uTorchRadius <= 1e-5 || N==1){
+    int N = max(uTorchSoftSamples, 0);
+    if (uTorchRadius <= 1e-5 || N <= 1){
         bool oc = traverseHitAny(pHit + Ldir*1e-3, Ldir);
         return oc ? 0.0 : 1.0;
     }
@@ -244,12 +249,20 @@ vec3 blockColor(uint id){
 
 // Skylight: cosine-weighted hemisphere sample of envSky with occlusion
 vec3 computeSkyIrradiance(vec3 pHit, vec3 n){
-    const int SKY_SAMPLES = 12;
+    int skySamples = max(uSkySamples, 0);
+    if (skySamples <= 1){
+        vec3 L = normalize(n);
+        bool oc = traverseHitAny(pHit + L*1e-3, L);
+        if (oc) return vec3(0.0);
+        float weight = max(dot(n, L), 0.0);
+        return envSky(L) * weight;
+    }
+
     vec3 sum = vec3(0.0);
     float W  = 0.0;
 
-    for (int i=0; i<SKY_SAMPLES; ++i){
-        float u = (float(i)+0.5)/float(SKY_SAMPLES);
+    for (int i=0; i<skySamples; ++i){
+        float u = (float(i)+0.5)/float(skySamples);
         float phi = GOLDEN_ANGLE * float(i);
         float y = u;
         float r = sqrt(max(0.0, 1.0 - y*y));

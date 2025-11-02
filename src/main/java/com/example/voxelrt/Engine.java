@@ -34,6 +34,7 @@ public class Engine {
     private int locComputeSkyIntensity = -1;
     private int locComputeSkyZenith = -1;
     private int locComputeSkyHorizon = -1;
+    private int locComputeSkySamples = -1;
     private int locComputeSunAngularRadius = -1;
     private int locComputeSunSoftSamples = -1;
     private int locComputeTorchEnabled = -1;
@@ -70,6 +71,45 @@ public class Engine {
     private boolean presentTest=false;
     private boolean computeEnabled=true;
     private boolean useGPUWorld=false; // start with GPU fallback visible
+
+    private static class LightingPreset {
+        final String name;
+        final int skySamples;
+        final int sunSoftSamples;
+        final int torchSoftSamples;
+        final float torchRadius;
+        final boolean torchEnabled;
+
+        LightingPreset(String name, int skySamples, int sunSoftSamples, int torchSoftSamples, float torchRadius, boolean torchEnabled) {
+            this.name = name;
+            this.skySamples = skySamples;
+            this.sunSoftSamples = sunSoftSamples;
+            this.torchSoftSamples = torchSoftSamples;
+            this.torchRadius = torchRadius;
+            this.torchEnabled = torchEnabled;
+        }
+    }
+
+    private final LightingPreset[] lightingPresets = new LightingPreset[]{
+            new LightingPreset("Low", 2, 2, 1, 0.0f, false),
+            new LightingPreset("Medium", 4, 4, 2, 0.10f, true),
+            new LightingPreset("High", 8, 8, 8, 0.15f, true)
+    };
+    private int currentLightingPreset = 0;
+    private boolean torchToggle = true;
+
+    private LightingPreset activeLightingPreset(){
+        return lightingPresets[currentLightingPreset];
+    }
+
+    private void cycleLightingPreset(){
+        currentLightingPreset = (currentLightingPreset + 1) % lightingPresets.length;
+        LightingPreset preset = activeLightingPreset();
+        System.out.println("[LIGHTING] Quality preset=" + preset.name +
+                " sky=" + preset.skySamples +
+                " sun=" + preset.sunSoftSamples +
+                " torch=" + (preset.torchEnabled ? preset.torchSoftSamples : 0));
+    }
 
     /** Starts the engine and tears down the native resources when the loop exits. */
     public void run() {
@@ -139,6 +179,11 @@ public class Engine {
                 if (key==GLFW_KEY_H){ useGPUWorld = !useGPUWorld; System.out.println("[DEBUG] useGPUWorld="+useGPUWorld); }
                 if (key==GLFW_KEY_KP_ADD || key==GLFW_KEY_EQUAL){ resolutionScale=Math.min(2.0f,resolutionScale+0.1f); recreateOutputTexture(); }
                 if (key==GLFW_KEY_KP_SUBTRACT || key==GLFW_KEY_MINUS){ resolutionScale=Math.max(0.5f,resolutionScale-0.1f); recreateOutputTexture(); }
+                if (key==GLFW_KEY_F5){ cycleLightingPreset(); }
+                if (key==GLFW_KEY_T){
+                    torchToggle = !torchToggle;
+                    System.out.println("[LIGHTING] Torch " + (torchToggle ? "enabled" : "disabled"));
+                }
             }
         });
 
@@ -257,6 +302,7 @@ public class Engine {
         locComputeSkyIntensity = glGetUniformLocation(computeProgram, "uSkyIntensity");
         locComputeSkyZenith = glGetUniformLocation(computeProgram, "uSkyZenith");
         locComputeSkyHorizon = glGetUniformLocation(computeProgram, "uSkyHorizon");
+        locComputeSkySamples = glGetUniformLocation(computeProgram, "uSkySamples");
         locComputeSunAngularRadius = glGetUniformLocation(computeProgram, "uSunAngularRadius");
         locComputeSunSoftSamples = glGetUniformLocation(computeProgram, "uSunSoftSamples");
         locComputeTorchEnabled = glGetUniformLocation(computeProgram, "uTorchEnabled");
@@ -322,19 +368,28 @@ public class Engine {
             // Compute pass
             if (computeEnabled){
                 glUseProgram(computeProgram);
+                LightingPreset preset = activeLightingPreset();
+                int skySamples = Math.max(preset.skySamples, 0);
+                int sunSamples = Math.max(preset.sunSoftSamples, 0);
+                boolean torchActive = torchToggle && preset.torchEnabled;
+                int torchSamples = torchActive ? Math.max(preset.torchSoftSamples, 0) : 0;
+                float torchRadius = torchActive ? preset.torchRadius : 0.0f;
+                float torchIntensity = torchActive ? 30.0f : 0.0f;
+
                 if (locComputeSkyModel >= 0) glUniform1i(locComputeSkyModel, 1);         // Preetham
                 if (locComputeTurbidity >= 0) glUniform1f(locComputeTurbidity, 2.5f);    // mild clear sky
                 if (locComputeSkyIntensity >= 0) glUniform1f(locComputeSkyIntensity, 1.0f);
                 if (locComputeSkyZenith >= 0) glUniform3f(locComputeSkyZenith, 0.60f, 0.70f, 0.90f);   // fallback gradient
                 if (locComputeSkyHorizon >= 0) glUniform3f(locComputeSkyHorizon, 0.95f, 0.80f, 0.60f);
+                if (locComputeSkySamples >= 0) glUniform1i(locComputeSkySamples, skySamples);
                 if (locComputeSunAngularRadius >= 0) glUniform1f(locComputeSunAngularRadius, 0.00465f);    // ~0.266°
-                if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, 8);
+                if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, sunSamples);
 
-                if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 1);
+                if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, torchActive ? 1 : 0);
                 if (locComputeTorchPos >= 0) glUniform3f(locComputeTorchPos, camera.position.x, camera.position.y, camera.position.z);
-                if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 30.0f);
-                if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.15f);
-                if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 8);
+                if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, torchIntensity);
+                if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, torchRadius);
+                if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, torchSamples);
 
                 int rw = Math.max(1, (int)(width*resolutionScale));
                 int rh = Math.max(1, (int)(height*resolutionScale));
