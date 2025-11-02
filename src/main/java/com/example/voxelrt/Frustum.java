@@ -28,10 +28,10 @@ public final class Frustum {
     public static Frustum fromMatrix(Matrix4f viewProjection) {
         Frustum f = new Frustum();
 
-        float m00 = viewProjection.m00, m01 = viewProjection.m01, m02 = viewProjection.m02, m03 = viewProjection.m03;
-        float m10 = viewProjection.m10, m11 = viewProjection.m11, m12 = viewProjection.m12, m13 = viewProjection.m13;
-        float m20 = viewProjection.m20, m21 = viewProjection.m21, m22 = viewProjection.m22, m23 = viewProjection.m23;
-        float m30 = viewProjection.m30, m31 = viewProjection.m31, m32 = viewProjection.m32, m33 = viewProjection.m33;
+        float m00 = viewProjection.m00(), m01 = viewProjection.m01(), m02 = viewProjection.m02(), m03 = viewProjection.m03();
+        float m10 = viewProjection.m10(), m11 = viewProjection.m11(), m12 = viewProjection.m12(), m13 = viewProjection.m13();
+        float m20 = viewProjection.m20(), m21 = viewProjection.m21(), m22 = viewProjection.m22(), m23 = viewProjection.m23();
+        float m30 = viewProjection.m30(), m31 = viewProjection.m31(), m32 = viewProjection.m32(), m33 = viewProjection.m33();
 
         // Left, Right, Bottom, Top, Near, Far planes
         f.setPlane(0, m03 + m00, m13 + m10, m23 + m20, m33 + m30);
