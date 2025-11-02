@@ -2,9 +2,11 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(rgba8, binding = 0) uniform writeonly image2D uOutput;
 layout(std430, binding = 0) readonly buffer Voxels { uint data[]; };
+layout(std430, binding = 1) readonly buffer VoxelsCoarse { uint dataCoarse[]; };
 
 // -------- uniforms --------
 uniform ivec3 uWorldSize;
+uniform ivec3 uWorldSizeCoarse;
 uniform ivec3 uRegionOrigin;
 uniform vec3  uCamPos;
 uniform mat4  uInvProj;
@@ -12,6 +14,8 @@ uniform mat4  uInvView;
 uniform vec3  uSunDir;          // normalized
 uniform ivec2 uResolution;
 uniform float uVoxelScale;
+uniform float uLodScale;
+uniform float uLodSwitchDistance;
 uniform int   uDebugGradient;
 
 // Sky model / Preetham
@@ -155,6 +159,15 @@ uint loadVoxel(ivec3 local){
     return data[idx];
 }
 
+bool inBoundsCoarse(ivec3 p){
+    return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, uWorldSizeCoarse));
+}
+uint loadVoxelCoarse(ivec3 local){
+    if (!inBoundsCoarse(local)) return 0u;
+    int idx = local.x + uWorldSizeCoarse.x * (local.y + uWorldSizeCoarse.y * local.z);
+    return dataCoarse[idx];
+}
+
 // DDA traverse: returns true if any solid voxel is hit
 bool traverseHitAny(vec3 startP, vec3 dir){
     vec3 rd = normalize(dir);
@@ -263,6 +276,32 @@ vec3 computeSkyIrradiance(vec3 pHit, vec3 n){
     return (W > 0.0) ? (sum / W) : vec3(0.0);
 }
 
+vec3 shadeVoxel(uint blockId, vec3 pHit, vec3 n){
+    vec3 albedo = blockColor(blockId);
+    vec3 Ls = normalize(uSunDir);
+    float ndl = max(dot(n, Ls), 0.0);
+    float sunVis = (ndl > 0.0) ? sunVisibility(pHit, n) : 0.0;
+
+    float torchTerm = 0.0;
+    if (uTorchEnabled != 0){
+        vec3 toTorch = uTorchPos - pHit;
+        float dist = length(toTorch);
+        if (dist > 1e-3){
+            vec3 Lt = toTorch / dist;
+            float ndl_t = max(dot(n, Lt), 0.0);
+            if (ndl_t > 0.0){
+                float visT = torchVisibilitySoft(pHit, Lt, dist);
+                float atten = 1.0 / max(1.0, dist*dist);
+                torchTerm = uTorchIntensity * ndl_t * visT * atten;
+            }
+        }
+    }
+
+    vec3 directSun = albedo * (ndl * sunVis);
+    vec3 skyl      = albedo * computeSkyIrradiance(pHit, n);
+    return directSun + skyl + albedo * torchTerm;
+}
+
 // --------------------------- main ---------------------------
 void main(){
     ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
@@ -290,67 +329,121 @@ void main(){
         return;
     }
 
-    // DDA setup
-    vec3 p = roLocal + rd * max(tEnter, 0.0);
-    ivec3 v = ivec3(floor(p));
+    // DDA setup with distance-based LOD
+    float tEnterClamped = max(tEnter, 0.0);
     vec3  dirStep = sign(rd);
     ivec3 stepI   = ivec3(dirStep);
     ivec3 off     = ivec3(stepI.x > 0 ? 1 : 0,
-    stepI.y > 0 ? 1 : 0,
-    stepI.z > 0 ? 1 : 0);
-    vec3 nextBoundary = vec3(v + off);
-    vec3 tMax3  = (nextBoundary - p) / rd;
-    vec3 tDelta = abs(1.0 / rd);
+                          stepI.y > 0 ? 1 : 0,
+                          stepI.z > 0 ? 1 : 0);
 
     vec3 lastN = vec3(0.0);
     bool hit = false;
     uint blockId = 0u;
     vec3 color = vec3(0.0);
 
-    for (int iter=0; iter<4096; ++iter){
-        if (!inBounds(v)) break;
+    float lodScale = max(uLodScale, 1.0);
+    float lodSwitch = max(uLodSwitchDistance, 0.0);
+    bool useLod = (lodScale > 1.0) && (lodSwitch > 0.0);
+    float coarseT = 0.0;
+    bool coarseExited = false;
 
-        blockId = loadVoxel(v);
-        if (blockId != 0u){
-            bool hasLast = any(notEqual(lastN, vec3(0.0)));
-            vec3 n = hasLast ? normalize(lastN) : normalize(-rd);
+    if (useLod){
+        vec3 pStart = roLocal + rd * tEnterClamped;
+        ivec3 vCoarse = ivec3(floor(pStart / lodScale));
+        vec3 nextBoundaryCoarse = vec3(vCoarse + off) * lodScale;
+        vec3 tMaxCoarse  = (nextBoundaryCoarse - pStart) / rd;
+        vec3 tDeltaCoarse = abs(lodScale / rd);
 
-            // Sun (soft) + Skylight + Torch
-            vec3 pHit = vec3(v) + vec3(0.5) + 0.5 * n;
+        for (int iter=0; iter<2048; ++iter){
+            if (!inBoundsCoarse(vCoarse)){ coarseExited = true; break; }
 
-            vec3 Ls = normalize(uSunDir);
-            float ndl = max(dot(n, Ls), 0.0);
-            float sunVis = (ndl > 0.0) ? sunVisibility(pHit, n) : 0.0;
+            vec3 cellCenter = vec3(vCoarse) * lodScale + vec3(0.5 * lodScale);
+            float distCoarse = length(cellCenter - roLocal);
+            if (distCoarse <= lodSwitch) break;
 
-            float torchTerm = 0.0;
-            if (uTorchEnabled != 0){
-                vec3 toTorch = uTorchPos - pHit;
-                float dist = length(toTorch);
-                if (dist > 1e-3){
-                    vec3 Lt = toTorch / dist;
-                    float ndl_t = max(dot(n, Lt), 0.0);
-                    if (ndl_t > 0.0){
-                        float visT = torchVisibilitySoft(pHit, Lt, dist);
-                        float atten = 1.0 / max(1.0, dist*dist);
-                        torchTerm = uTorchIntensity * ndl_t * visT * atten;
-                    }
-                }
+            uint coarseId = loadVoxelCoarse(vCoarse);
+            if (coarseId != 0u){
+                vec3 n = any(notEqual(lastN, vec3(0.0))) ? normalize(lastN) : normalize(-rd);
+                vec3 pHit = cellCenter + n * (0.5 * lodScale);
+                color = shadeVoxel(coarseId, pHit, n);
+                blockId = coarseId;
+                hit = true;
+                break;
             }
 
-            vec3 albedo = blockColor(blockId);
-            vec3 directSun = albedo * (ndl * sunVis);
-            vec3 skyl      = albedo * computeSkyIrradiance(pHit, n);
-
-            color = directSun + skyl + albedo * torchTerm;
-            hit = true; break;
+            if (tMaxCoarse.x < tMaxCoarse.y){
+                if (tMaxCoarse.x < tMaxCoarse.z){
+                    coarseT = tMaxCoarse.x;
+                    vCoarse.x += stepI.x;
+                    tMaxCoarse.x += tDeltaCoarse.x;
+                    lastN = vec3(-dirStep.x, 0.0, 0.0);
+                } else {
+                    coarseT = tMaxCoarse.z;
+                    vCoarse.z += stepI.z;
+                    tMaxCoarse.z += tDeltaCoarse.z;
+                    lastN = vec3(0.0, 0.0, -dirStep.z);
+                }
+            } else {
+                if (tMaxCoarse.y < tMaxCoarse.z){
+                    coarseT = tMaxCoarse.y;
+                    vCoarse.y += stepI.y;
+                    tMaxCoarse.y += tDeltaCoarse.y;
+                    lastN = vec3(0.0, -dirStep.y, 0.0);
+                } else {
+                    coarseT = tMaxCoarse.z;
+                    vCoarse.z += stepI.z;
+                    tMaxCoarse.z += tDeltaCoarse.z;
+                    lastN = vec3(0.0, 0.0, -dirStep.z);
+                }
+            }
         }
+    }
 
-        if (tMax3.x < tMax3.y){
-            if (tMax3.x < tMax3.z){ v.x += stepI.x; tMax3.x += tDelta.x; lastN = vec3(-dirStep.x,0,0); }
-            else { v.z += stepI.z; tMax3.z += tDelta.z; lastN = vec3(0,0,-dirStep.z); }
-        } else {
-            if (tMax3.y < tMax3.z){ v.y += stepI.y; tMax3.y += tDelta.y; lastN = vec3(0,-dirStep.y,0); }
-            else { v.z += stepI.z; tMax3.z += tDelta.z; lastN = vec3(0,0,-dirStep.z); }
+    float fineStartT = tEnterClamped + coarseT;
+    if (fineStartT > tExit) coarseExited = true;
+    if (!hit && !coarseExited){
+        float tFineParam = min(fineStartT + 1e-4, tExit);
+        vec3 pFine = roLocal + rd * tFineParam;
+        ivec3 v = ivec3(floor(pFine));
+        vec3 nextBoundary = vec3(v + off);
+        vec3 tMax3  = (nextBoundary - pFine) / rd;
+        vec3 tDelta = abs(1.0 / rd);
+        lastN = vec3(0.0);
+
+        for (int iter=0; iter<4096; ++iter){
+            if (!inBounds(v)) break;
+
+            blockId = loadVoxel(v);
+            if (blockId != 0u){
+                vec3 n = any(notEqual(lastN, vec3(0.0))) ? normalize(lastN) : normalize(-rd);
+                vec3 pHit = vec3(v) + vec3(0.5) + 0.5 * n;
+                color = shadeVoxel(blockId, pHit, n);
+                hit = true;
+                break;
+            }
+
+            if (tMax3.x < tMax3.y){
+                if (tMax3.x < tMax3.z){
+                    v.x += stepI.x;
+                    tMax3.x += tDelta.x;
+                    lastN = vec3(-dirStep.x, 0.0, 0.0);
+                } else {
+                    v.z += stepI.z;
+                    tMax3.z += tDelta.z;
+                    lastN = vec3(0.0, 0.0, -dirStep.z);
+                }
+            } else {
+                if (tMax3.y < tMax3.z){
+                    v.y += stepI.y;
+                    tMax3.y += tDelta.y;
+                    lastN = vec3(0.0, -dirStep.y, 0.0);
+                } else {
+                    v.z += stepI.z;
+                    tMax3.z += tDelta.z;
+                    lastN = vec3(0.0, 0.0, -dirStep.z);
+                }
+            }
         }
     }
 
