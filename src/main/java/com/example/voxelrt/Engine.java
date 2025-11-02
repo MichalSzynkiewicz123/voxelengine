@@ -11,6 +11,7 @@ import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL46C.*;
@@ -51,6 +52,12 @@ public class Engine {
     private int locComputeResolution = -1;
     private int locComputeDebugGradient = -1;
     private int locComputeUseGPUWorld = -1;
+    private static final int MAX_LOD_LEVELS = 4;
+    private int locComputeLodCount = -1;
+    private final int[] locComputeLodOrigins = new int[MAX_LOD_LEVELS];
+    private final int[] locComputeLodSizes = new int[MAX_LOD_LEVELS];
+    private final int[] locComputeLodScales = new int[MAX_LOD_LEVELS];
+    private final int[] locComputeLodOffsets = new int[MAX_LOD_LEVELS];
     private int locQuadTex = -1;
     private int locQuadScreenSize = -1;
     private int locQuadPresentTest = -1;
@@ -286,6 +293,17 @@ public class Engine {
         locComputeResolution = glGetUniformLocation(computeProgram, "uResolution");
         locComputeDebugGradient = glGetUniformLocation(computeProgram, "uDebugGradient");
         locComputeUseGPUWorld = glGetUniformLocation(computeProgram, "uUseGPUWorld");
+        locComputeLodCount = glGetUniformLocation(computeProgram, "uLodCount");
+        Arrays.fill(locComputeLodOrigins, -1);
+        Arrays.fill(locComputeLodSizes, -1);
+        Arrays.fill(locComputeLodScales, -1);
+        Arrays.fill(locComputeLodOffsets, -1);
+        for (int i = 0; i < MAX_LOD_LEVELS; i++) {
+            locComputeLodOrigins[i] = glGetUniformLocation(computeProgram, "uLodOrigins[" + i + "]");
+            locComputeLodSizes[i] = glGetUniformLocation(computeProgram, "uLodSizes[" + i + "]");
+            locComputeLodScales[i] = glGetUniformLocation(computeProgram, "uLodScales[" + i + "]");
+            locComputeLodOffsets[i] = glGetUniformLocation(computeProgram, "uLodOffsets[" + i + "]");
+        }
     }
 
     private void cacheQuadUniformLocations(){
@@ -363,6 +381,30 @@ public class Engine {
                 if (locComputeWorldSize >= 0) glUniform3i(locComputeWorldSize, region.rx, region.ry, region.rz);
                 if (locComputeRegionOrigin >= 0) glUniform3i(locComputeRegionOrigin, region.originX, region.originY, region.originZ);
                 if (locComputeVoxelScale >= 0) glUniform1f(locComputeVoxelScale, 1.0f);
+                if (locComputeLodCount >= 0) glUniform1i(locComputeLodCount, region.lodCount());
+                for (int i = 0; i < MAX_LOD_LEVELS; i++) {
+                    ActiveRegion.LodLevel levelInfo = i < region.lodCount() ? region.getLevel(i) : null;
+                    int locOrigin = locComputeLodOrigins[i];
+                    if (locOrigin >= 0) {
+                        if (levelInfo != null) glUniform3i(locOrigin, levelInfo.originX(), levelInfo.originY(), levelInfo.originZ());
+                        else glUniform3i(locOrigin, 0, 0, 0);
+                    }
+                    int locSize = locComputeLodSizes[i];
+                    if (locSize >= 0) {
+                        if (levelInfo != null) glUniform3i(locSize, levelInfo.sizeX(), levelInfo.sizeY(), levelInfo.sizeZ());
+                        else glUniform3i(locSize, 0, 0, 0);
+                    }
+                    int locScale = locComputeLodScales[i];
+                    if (locScale >= 0) {
+                        if (levelInfo != null) glUniform1f(locScale, (float) levelInfo.scale());
+                        else glUniform1f(locScale, 1.0f);
+                    }
+                    int locOffset = locComputeLodOffsets[i];
+                    if (locOffset >= 0) {
+                        if (levelInfo != null) glUniform1i(locOffset, levelInfo.bufferOffset());
+                        else glUniform1i(locOffset, 0);
+                    }
+                }
                 if (locComputeCamPos >= 0) glUniform3f(locComputeCamPos, camera.position.x, camera.position.y, camera.position.z);
                 Vector3f sunDir = new Vector3f(-0.6f,-1.0f,-0.3f).normalize();
                 if (locComputeSunDir >= 0) glUniform3f(locComputeSunDir, sunDir.x, sunDir.y, sunDir.z);
