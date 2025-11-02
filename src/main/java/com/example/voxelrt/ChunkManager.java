@@ -8,6 +8,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -28,6 +29,7 @@ public class ChunkManager {
     private final ExecutorService executor;
     private final ConcurrentHashMap<ChunkPos, CompletableFuture<Chunk>> pending = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<ChunkLoadResult> completed = new ConcurrentLinkedQueue<>();
+    private final AtomicBoolean integratedSinceLastPoll = new AtomicBoolean();
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this.gen = g;
@@ -164,7 +166,14 @@ public class ChunkManager {
             }
             changed = true;
         }
+        if (changed) {
+            integratedSinceLastPoll.set(true);
+        }
         return changed;
+    }
+
+    public boolean drainIntegratedFlag() {
+        return integratedSinceLastPoll.getAndSet(false);
     }
 
     public void shutdown() {

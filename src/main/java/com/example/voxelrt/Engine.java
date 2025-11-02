@@ -330,7 +330,8 @@ public class Engine {
             glClear(GL_COLOR_BUFFER_BIT);
             pollInput(dt);
 
-            boolean loadedNewChunks = chunkManager.update();
+            chunkManager.update();
+            boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
 
             int cx=(int)Math.floor(camera.position.x);
             int cy=(int)Math.floor(camera.position.y);
