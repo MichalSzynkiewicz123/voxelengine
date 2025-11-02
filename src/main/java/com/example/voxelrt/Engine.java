@@ -128,9 +128,15 @@ public class Engine {
                     };
                 }
                 if (key==GLFW_KEY_R){
+                    int rw = Math.max(1, (int)(width*resolutionScale));
+                    int rh = Math.max(1, (int)(height*resolutionScale));
+                    Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
+                    Matrix4f view = camera.viewMatrix();
+                    Frustum frustum = buildFrustum(proj, view);
                     region.rebuildAround((int)Math.floor(camera.position.x),
                                          (int)Math.floor(camera.position.y),
-                                         (int)Math.floor(camera.position.z));
+                                         (int)Math.floor(camera.position.z),
+                                         frustum);
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                 }
                 if (key==GLFW_KEY_G){ debugGradient = !debugGradient; System.out.println("[DEBUG] debugGradient="+debugGradient); }
@@ -244,9 +250,15 @@ public class Engine {
         camera.position.set(spawnX + 0.5f, topY + 2.5f, spawnZ + 0.5f);
 
         region = new ActiveRegion(chunkManager, 128, 128, 128);
+        int rw = Math.max(1, (int)(width*resolutionScale));
+        int rh = Math.max(1, (int)(height*resolutionScale));
+        Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
+        Matrix4f view = camera.viewMatrix();
+        Frustum frustum = buildFrustum(proj, view);
         region.rebuildAround((int)Math.floor(camera.position.x),
                              (int)Math.floor(camera.position.y),
-                             (int)Math.floor(camera.position.z));
+                             (int)Math.floor(camera.position.z),
+                             frustum);
         ssboVoxels = region.ssbo();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
     }
@@ -312,10 +324,17 @@ public class Engine {
             int cy=(int)Math.floor(camera.position.y);
             int cz=(int)Math.floor(camera.position.z);
             int margin=24;
+            int rw = Math.max(1, (int)(width*resolutionScale));
+            int rh = Math.max(1, (int)(height*resolutionScale));
+            Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
+            Matrix4f view = camera.viewMatrix();
+            Matrix4f invProj = new Matrix4f(proj).invert();
+            Matrix4f invView = new Matrix4f(view).invert();
+            Frustum frustum = buildFrustum(proj, view);
             if (cx < region.originX+margin || cz < region.originZ+margin ||
                 cx > region.originX+region.rx-margin || cz > region.originZ+region.rz-margin ||
                 cy < region.originY+margin || cy > region.originY+region.ry-margin){
-                region.rebuildAround(cx,cy,cz);
+                region.rebuildAround(cx,cy,cz, frustum);
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
             }
 
@@ -336,13 +355,8 @@ public class Engine {
                 if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.15f);
                 if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 8);
 
-                int rw = Math.max(1, (int)(width*resolutionScale));
-                int rh = Math.max(1, (int)(height*resolutionScale));
                 glBindImageTexture(0, outputTex, 0, false, 0, GL_WRITE_ONLY, GL_RGBA8);
 
-                Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
-                Matrix4f invProj = new Matrix4f(proj).invert();
-                Matrix4f invView = new Matrix4f(camera.viewMatrix()).invert();
                 uploadMatrix(locComputeInvProj, invProj);
                 uploadMatrix(locComputeInvView, invView);
 
@@ -409,6 +423,10 @@ public class Engine {
         vel.fma(wish.z, f).fma(wish.x, r).fma(wish.y, u);
         if (vel.lengthSquared()>0) vel.normalize(speed);
         Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
+    }
+
+    private Frustum buildFrustum(Matrix4f proj, Matrix4f view){
+        return Frustum.fromMatrix(new Matrix4f(proj).mul(view));
     }
 
     private void uploadMatrix(int location, Matrix4f m){
