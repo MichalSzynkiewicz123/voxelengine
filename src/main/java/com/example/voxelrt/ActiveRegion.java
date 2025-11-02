@@ -228,6 +228,102 @@ public class ActiveRegion {
         return ssboCoarse;
     }
 
+    public void integrateChunk(Chunk chunk) {
+        int chunkX0 = chunk.pos.cx() * Chunk.SX;
+        int chunkZ0 = chunk.pos.cz() * Chunk.SZ;
+        int chunkX1 = chunkX0 + Chunk.SX;
+        int chunkZ1 = chunkZ0 + Chunk.SZ;
+
+        int regionX0 = originX;
+        int regionY0 = originY;
+        int regionZ0 = originZ;
+        int regionX1 = originX + rx;
+        int regionY1 = originY + ry;
+        int regionZ1 = originZ + rz;
+
+        int overlapX0 = java.lang.Math.max(chunkX0, regionX0);
+        int overlapX1 = java.lang.Math.min(chunkX1, regionX1);
+        int overlapZ0 = java.lang.Math.max(chunkZ0, regionZ0);
+        int overlapZ1 = java.lang.Math.min(chunkZ1, regionZ1);
+        int overlapY0 = java.lang.Math.max(regionY0, 0);
+        int overlapY1 = java.lang.Math.min(regionY1, Chunk.SY);
+
+        if (overlapX0 >= overlapX1 || overlapY0 >= overlapY1 || overlapZ0 >= overlapZ1) {
+            return;
+        }
+
+        int localX0 = overlapX0 - regionX0;
+        int localX1 = overlapX1 - regionX0;
+        int localY0 = overlapY0 - regionY0;
+        int localY1 = overlapY1 - regionY0;
+        int localZ0 = overlapZ0 - regionZ0;
+        int localZ1 = overlapZ1 - regionZ0;
+
+        IntBuffer rowUpload = null;
+        if (ssbo != 0) {
+            rowUpload = ByteBuffer.allocateDirect((localX1 - localX0) * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+        }
+
+        for (int z = localZ0; z < localZ1; z++) {
+            int worldZ = originZ + z;
+            int chunkZ = worldZ - chunkZ0;
+            for (int y = localY0; y < localY1; y++) {
+                int worldY = originY + y;
+                if (rowUpload != null) rowUpload.clear();
+                for (int x = localX0; x < localX1; x++) {
+                    int worldX = originX + x;
+                    int chunkX = worldX - chunkX0;
+                    int block = chunk.get(chunkX, worldY, chunkZ);
+                    buf[ridx(x, y, z)] = block;
+                    if (rowUpload != null) {
+                        rowUpload.put(block);
+                    }
+                }
+                if (rowUpload != null) {
+                    rowUpload.flip();
+                    long offset = (long) ridx(localX0, y, z) * 4L;
+                    glBufferSubData(GL_SHADER_STORAGE_BUFFER, offset, rowUpload);
+                }
+            }
+        }
+
+        if (ssbo != 0) {
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        }
+
+        int coarseX0 = localX0 / lodScale;
+        int coarseX1 = java.lang.Math.min(rxCoarse, (localX1 + lodScale - 1) / lodScale);
+        int coarseY0 = localY0 / lodScale;
+        int coarseY1 = java.lang.Math.min(ryCoarse, (localY1 + lodScale - 1) / lodScale);
+        int coarseZ0 = localZ0 / lodScale;
+        int coarseZ1 = java.lang.Math.min(rzCoarse, (localZ1 + lodScale - 1) / lodScale);
+
+        IntBuffer coarseUpload = null;
+        if (ssboCoarse != 0) {
+            coarseUpload = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder()).asIntBuffer();
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboCoarse);
+        }
+
+        for (int cz = coarseZ0; cz < coarseZ1; cz++) {
+            for (int cy = coarseY0; cy < coarseY1; cy++) {
+                for (int cx = coarseX0; cx < coarseX1; cx++) {
+                    int coarseId = rebuildCoarseCell(cx, cy, cz);
+                    bufCoarse[ridxCoarse(cx, cy, cz)] = coarseId;
+                    if (coarseUpload != null) {
+                        coarseUpload.put(0, coarseId);
+                        coarseUpload.position(0);
+                        glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridxCoarse(cx, cy, cz) * 4L, coarseUpload);
+                    }
+                }
+            }
+        }
+
+        if (ssboCoarse != 0) {
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        }
+    }
+
     public int rxCoarse() {
         return rxCoarse;
     }

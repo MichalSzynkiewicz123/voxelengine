@@ -1,6 +1,8 @@
 package com.example.voxelrt;
 
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.Consumer;
 
 /**
  * Keeps track of chunks that have been generated and loaded into memory.
@@ -15,10 +17,19 @@ public class ChunkManager {
     private final LinkedHashMap<ChunkPos, Chunk> lru = new LinkedHashMap<>(64, 0.75f, true);
     private final int maxLoaded;
     private final Map<Long, Integer> edits = new HashMap<>();
+    private final ExecutorService executor;
+    private final ConcurrentLinkedQueue<Chunk> completed = new ConcurrentLinkedQueue<>();
+    private final Set<ChunkPos> loading = ConcurrentHashMap.newKeySet();
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this.gen = g;
         this.maxLoaded = java.lang.Math.max(64, maxLoaded);
+        int threads = java.lang.Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        this.executor = Executors.newFixedThreadPool(threads, r -> {
+            Thread t = new Thread(r, "ChunkGen");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
     /**
@@ -57,31 +68,19 @@ public class ChunkManager {
         Chunk c = map.get(p);
         if (c == null) {
             c = new Chunk(p);
-            c.fill(gen);
-
-            int wx0 = p.cx() * Chunk.SX;
-            int wz0 = p.cz() * Chunk.SZ;
-            for (var e : edits.entrySet()) {
-                long k = e.getKey();
-                int x = (int) ((k >> 42) & 0x1FFFFF);
-                int y = (int) ((k >> 32) & 0x3FF);
-                int z = (int) (k & 0x1FFFFF);
-                if (x >= 0x100000) x -= 0x200000;
-                if (z >= 0x100000) z -= 0x200000;
-                if (x >= wx0 && x < wx0 + Chunk.SX && z >= wz0 && z < wz0 + Chunk.SZ) {
-                    c.set(x - wx0, y, z - wz0, e.getValue());
-                }
-            }
             map.put(p, c);
+            if (loading.add(p)) {
+                ChunkPos posCopy = p;
+                executor.submit(() -> {
+                    Chunk chunk = new Chunk(posCopy);
+                    chunk.fill(gen);
+                    completed.add(chunk);
+                });
+            }
         }
 
         lru.put(p, c);
-        while (lru.size() > maxLoaded) {
-            var it = lru.keySet().iterator();
-            ChunkPos oldest = it.next();
-            it.remove();
-            map.remove(oldest);
-        }
+        trimCache();
         return c;
     }
 
@@ -94,5 +93,48 @@ public class ChunkManager {
         ChunkPos p = new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ));
         Chunk c = getOrLoad(p);
         return c.get(java.lang.Math.floorMod(x, Chunk.SX), y, java.lang.Math.floorMod(z, Chunk.SZ));
+    }
+
+    public void drainCompletedChunks(Consumer<Chunk> onReady) {
+        Chunk ready;
+        while ((ready = completed.poll()) != null) {
+            loading.remove(ready.pos);
+            applyEdits(ready);
+            map.put(ready.pos, ready);
+            lru.put(ready.pos, ready);
+            trimCache();
+            if (onReady != null) {
+                onReady.accept(ready);
+            }
+        }
+    }
+
+    private void applyEdits(Chunk c) {
+        int wx0 = c.pos.cx() * Chunk.SX;
+        int wz0 = c.pos.cz() * Chunk.SZ;
+        for (var e : edits.entrySet()) {
+            long k = e.getKey();
+            int x = (int) ((k >> 42) & 0x1FFFFF);
+            int y = (int) ((k >> 32) & 0x3FF);
+            int z = (int) (k & 0x1FFFFF);
+            if (x >= 0x100000) x -= 0x200000;
+            if (z >= 0x100000) z -= 0x200000;
+            if (x >= wx0 && x < wx0 + Chunk.SX && z >= wz0 && z < wz0 + Chunk.SZ) {
+                c.set(x - wx0, y, z - wz0, e.getValue());
+            }
+        }
+    }
+
+    private void trimCache() {
+        while (lru.size() > maxLoaded) {
+            var it = lru.keySet().iterator();
+            ChunkPos oldest = it.next();
+            it.remove();
+            map.remove(oldest);
+        }
+    }
+
+    public void shutdown() {
+        executor.shutdownNow();
     }
 }
