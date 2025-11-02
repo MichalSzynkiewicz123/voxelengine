@@ -330,7 +330,7 @@ public class Engine {
             glClear(GL_COLOR_BUFFER_BIT);
             pollInput(dt);
 
-            chunkManager.update();
+            boolean loadedNewChunks = chunkManager.update();
 
             int cx=(int)Math.floor(camera.position.x);
             int cy=(int)Math.floor(camera.position.y);
@@ -342,10 +342,14 @@ public class Engine {
             Matrix4f view = camera.viewMatrix();
             Matrix4f invProj = new Matrix4f(proj).invert();
             Matrix4f invView = new Matrix4f(view).invert();
-            Frustum frustum = buildFrustum(proj, view);
-            if (cx < region.originX+margin || cz < region.originZ+margin ||
-                cx > region.originX+region.rx-margin || cz > region.originZ+region.rz-margin ||
-                cy < region.originY+margin || cy > region.originY+region.ry-margin){
+
+            boolean needsRegionRebuild = loadedNewChunks ||
+                    cx < region.originX+margin || cz < region.originZ+margin ||
+                    cx > region.originX+region.rx-margin || cz > region.originZ+region.rz-margin ||
+                    cy < region.originY+margin || cy > region.originY+region.ry-margin;
+
+            if (needsRegionRebuild) {
+                Frustum frustum = buildFrustum(proj, view);
                 region.rebuildAround(cx,cy,cz, frustum);
                 ssboVoxels = region.ssbo();
                 ssboVoxelsCoarse = region.ssboCoarse();

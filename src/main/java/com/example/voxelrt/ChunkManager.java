@@ -152,7 +152,8 @@ public class ChunkManager {
         }
     }
 
-    public void update() {
+    public boolean update() {
+        boolean changed = false;
         ChunkLoadResult result;
         while ((result = completed.poll()) != null) {
             applyEdits(result.chunk);
@@ -161,7 +162,9 @@ public class ChunkManager {
                 lru.put(result.pos, result.chunk);
                 trimToMaxLocked();
             }
+            changed = true;
         }
+        return changed;
     }
 
     public void shutdown() {
