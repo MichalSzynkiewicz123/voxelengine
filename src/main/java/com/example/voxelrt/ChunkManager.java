@@ -1,6 +1,15 @@
 package com.example.voxelrt;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Keeps track of chunks that have been generated and loaded into memory.
@@ -15,10 +24,24 @@ public class ChunkManager {
     private final LinkedHashMap<ChunkPos, Chunk> lru = new LinkedHashMap<>(64, 0.75f, true);
     private final int maxLoaded;
     private final Map<Long, Integer> edits = new HashMap<>();
+    private final Object lock = new Object();
+    private final Object editLock = new Object();
+    private final ExecutorService executor;
+    private final ConcurrentHashMap<ChunkPos, CompletableFuture<Chunk>> pending = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedQueue<ChunkLoadResult> completed = new ConcurrentLinkedQueue<>();
+    private final AtomicBoolean integratedSinceLastPoll = new AtomicBoolean();
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this.gen = g;
         this.maxLoaded = java.lang.Math.max(64, maxLoaded);
+        int threads = java.lang.Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        AtomicInteger ctr = new AtomicInteger();
+        ThreadFactory factory = r -> {
+            Thread t = new Thread(r, "ChunkGen-" + ctr.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        };
+        this.executor = Executors.newFixedThreadPool(threads, factory);
     }
 
     /**
@@ -33,15 +56,20 @@ public class ChunkManager {
     }
 
     public Integer getEdit(int x, int y, int z) {
-        return edits.get(key(x, y, z));
+        synchronized (editLock) {
+            return edits.get(key(x, y, z));
+        }
     }
 
     /**
      * Records a player edit and eagerly applies the change if the target chunk is currently loaded.
      */
     public void setEdit(int x, int y, int z, int b) {
-        edits.put(key(x, y, z), b);
-        Chunk c = map.get(new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ)));
+        long k = key(x, y, z);
+        synchronized (editLock) {
+            edits.put(k, b);
+        }
+        Chunk c = getIfLoaded(new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ)));
         if (c != null) {
             c.set(java.lang.Math.floorMod(x, Chunk.SX), y, java.lang.Math.floorMod(z, Chunk.SZ), b);
         }
@@ -54,13 +82,143 @@ public class ChunkManager {
      * as most recently used to maintain the LRU eviction order.
      */
     public Chunk getOrLoad(ChunkPos p) {
-        Chunk c = map.get(p);
-        if (c == null) {
-            c = new Chunk(p);
-            c.fill(gen);
+        update();
+        synchronized (lock) {
+            Chunk cached = map.get(p);
+            if (cached != null) {
+                lru.put(p, cached);
+                return cached;
+            }
+        }
 
-            int wx0 = p.cx() * Chunk.SX;
-            int wz0 = p.cz() * Chunk.SZ;
+        CompletableFuture<Chunk> future = ensureTask(p);
+        Chunk chunk;
+        try {
+            chunk = future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Chunk generation interrupted for " + p, e);
+        } catch (ExecutionException e) {
+            throw new RuntimeException("Chunk generation failed for " + p, e.getCause());
+        }
+
+        update();
+        synchronized (lock) {
+            Chunk loaded = map.get(p);
+            if (loaded != null) {
+                lru.put(p, loaded);
+                return loaded;
+            }
+            applyEdits(chunk);
+            map.put(p, chunk);
+            lru.put(p, chunk);
+            trimToMaxLocked();
+            return chunk;
+        }
+    }
+
+    /**
+     * Samples a block from world space coordinates, taking player edits into account.
+     */
+    public int sample(int x, int y, int z) {
+        update();
+        Integer e = getEdit(x, y, z);
+        if (e != null) return e;
+        ChunkPos p = new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ));
+        Chunk c = getOrLoad(p);
+        return c.get(java.lang.Math.floorMod(x, Chunk.SX), y, java.lang.Math.floorMod(z, Chunk.SZ));
+    }
+
+    public Chunk getIfLoaded(ChunkPos pos) {
+        update();
+        synchronized (lock) {
+            Chunk chunk = map.get(pos);
+            if (chunk != null) {
+                lru.put(pos, chunk);
+            }
+            return chunk;
+        }
+    }
+
+    public void requestChunk(ChunkPos pos) {
+        update();
+        boolean alreadyLoaded;
+        synchronized (lock) {
+            alreadyLoaded = map.containsKey(pos);
+            if (alreadyLoaded) {
+                lru.put(pos, map.get(pos));
+            }
+        }
+        if (!alreadyLoaded) {
+            ensureTask(pos);
+        }
+    }
+
+    public boolean update() {
+        boolean changed = false;
+        ChunkLoadResult result;
+        while ((result = completed.poll()) != null) {
+            applyEdits(result.chunk);
+            synchronized (lock) {
+                map.put(result.pos, result.chunk);
+                lru.put(result.pos, result.chunk);
+                trimToMaxLocked();
+            }
+            changed = true;
+        }
+        if (changed) {
+            integratedSinceLastPoll.set(true);
+        }
+        return changed;
+    }
+
+    public boolean drainIntegratedFlag() {
+        return integratedSinceLastPoll.getAndSet(false);
+    }
+
+    public void shutdown() {
+        executor.shutdownNow();
+    }
+
+    private void trimToMaxLocked() {
+        while (lru.size() > maxLoaded) {
+            Iterator<ChunkPos> it = lru.keySet().iterator();
+            if (!it.hasNext()) break;
+            ChunkPos oldest = it.next();
+            it.remove();
+            map.remove(oldest);
+        }
+    }
+
+    private CompletableFuture<Chunk> ensureTask(ChunkPos pos) {
+        return pending.computeIfAbsent(pos, p -> {
+            CompletableFuture<Chunk> future = new CompletableFuture<>();
+            future.whenComplete((chunk, throwable) -> {
+                pending.remove(p, future);
+                if (throwable == null) {
+                    completed.add(new ChunkLoadResult(p, chunk));
+                } else {
+                    System.err.println("[ChunkManager] Failed to generate chunk " + p + ": " + throwable);
+                }
+            });
+            executor.submit(() -> {
+                try {
+                    Chunk chunk = new Chunk(p);
+                    chunk.fill(gen);
+                    future.complete(chunk);
+                } catch (Throwable t) {
+                    future.completeExceptionally(t);
+                }
+            });
+            return future;
+        });
+    }
+
+    private void applyEdits(Chunk chunk) {
+        ChunkPos pos = chunk.pos;
+        int wx0 = pos.cx() * Chunk.SX;
+        int wz0 = pos.cz() * Chunk.SZ;
+        synchronized (editLock) {
             for (var e : edits.entrySet()) {
                 long k = e.getKey();
                 int x = (int) ((k >> 42) & 0x1FFFFF);
@@ -69,30 +227,19 @@ public class ChunkManager {
                 if (x >= 0x100000) x -= 0x200000;
                 if (z >= 0x100000) z -= 0x200000;
                 if (x >= wx0 && x < wx0 + Chunk.SX && z >= wz0 && z < wz0 + Chunk.SZ) {
-                    c.set(x - wx0, y, z - wz0, e.getValue());
+                    chunk.set(x - wx0, y, z - wz0, e.getValue());
                 }
             }
-            map.put(p, c);
         }
-
-        lru.put(p, c);
-        while (lru.size() > maxLoaded) {
-            var it = lru.keySet().iterator();
-            ChunkPos oldest = it.next();
-            it.remove();
-            map.remove(oldest);
-        }
-        return c;
     }
 
-    /**
-     * Samples a block from world space coordinates, taking player edits into account.
-     */
-    public int sample(int x, int y, int z) {
-        Integer e = getEdit(x, y, z);
-        if (e != null) return e;
-        ChunkPos p = new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ));
-        Chunk c = getOrLoad(p);
-        return c.get(java.lang.Math.floorMod(x, Chunk.SX), y, java.lang.Math.floorMod(z, Chunk.SZ));
+    private static final class ChunkLoadResult {
+        final ChunkPos pos;
+        final Chunk chunk;
+
+        ChunkLoadResult(ChunkPos pos, Chunk chunk) {
+            this.pos = pos;
+            this.chunk = chunk;
+        }
     }
 }
