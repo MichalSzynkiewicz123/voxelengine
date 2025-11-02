@@ -1,12 +1,12 @@
 package com.example.voxelrt;
 
-import org.lwjgl.glfw.*;
+import org.joml.Matrix4f;
+import org.joml.Vector3f;
+import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
-import org.joml.*;
 
 import java.io.IOException;
-import java.lang.Math;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.nio.file.Files;
@@ -14,7 +14,7 @@ import java.nio.file.Path;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL46C.*;
-import static org.lwjgl.system.MemoryStack.*;
+import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
 /**
@@ -25,8 +25,8 @@ import static org.lwjgl.system.MemoryUtil.NULL;
  */
 public class Engine {
     private long window;
-    private int width=1280, height=720;
-    private float resolutionScale=1.0f;
+    private int width = 1280, height = 720;
+    private float resolutionScale = 1.0f;
 
     private int computeProgram, quadProgram;
     private int locComputeSkyModel = -1;
@@ -63,20 +63,22 @@ public class Engine {
 
     private Camera camera = new Camera(new Vector3f(64, 120, 64));
     private boolean mouseCaptured = true;
-    private double lastMouseX=Double.NaN, lastMouseY=Double.NaN;
+    private double lastMouseX = Double.NaN, lastMouseY = Double.NaN;
 
     private WorldGenerator generator;
     private ChunkManager chunkManager;
     private ActiveRegion region;
     private int placeBlock = Blocks.GRASS;
 
-    private boolean debugGradient=false;
-    private boolean presentTest=false;
-    private boolean computeEnabled=true;
-    private boolean useGPUWorld=false; // start with GPU fallback visible
+    private boolean debugGradient = false;
+    private boolean presentTest = false;
+    private boolean computeEnabled = true;
+    private boolean useGPUWorld = false; // start with GPU fallback visible
     private float lodSwitchDistance = 72.0f;
 
-    /** Starts the engine and tears down the native resources when the loop exits. */
+    /**
+     * Starts the engine and tears down the native resources when the loop exits.
+     */
     public void run() {
         initWindow();
         initGL();
@@ -88,7 +90,7 @@ public class Engine {
     /**
      * Configures GLFW, opens the window and installs the input callbacks that feed the camera.
      */
-    private void initWindow(){
+    private void initWindow() {
         if (!glfwInit()) throw new IllegalStateException("GLFW init failed");
         glfwDefaultWindowHints();
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
@@ -97,75 +99,98 @@ public class Engine {
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         window = glfwCreateWindow(width, height, "Voxel RT ", NULL, NULL);
-        if (window==NULL) throw new RuntimeException("Create window failed");
+        if (window == NULL) throw new RuntimeException("Create window failed");
         GLFWVidMode vm = glfwGetVideoMode(glfwGetPrimaryMonitor());
-        glfwSetWindowPos(window, (vm.width()-width)/2, (vm.height()-height)/2);
+        glfwSetWindowPos(window, (vm.width() - width) / 2, (vm.height() - height) / 2);
         glfwMakeContextCurrent(window);
         glfwSwapInterval(0);
         glfwShowWindow(window);
 
-        glfwSetFramebufferSizeCallback(window, (win,w,h)->{
-            width = Math.max(1,w); height=Math.max(1,h);
+        glfwSetFramebufferSizeCallback(window, (win, w, h) -> {
+            width = Math.max(1, w);
+            height = Math.max(1, h);
             recreateOutputTexture();
         });
 
-        glfwSetCursorPosCallback(window, (win,mx,my)->{
-            if(!mouseCaptured) return;
-            if (Double.isNaN(lastMouseX)) { lastMouseX=mx; lastMouseY=my; }
-            double dx=mx-lastMouseX, dy=my-lastMouseY;
-            lastMouseX=mx; lastMouseY=my;
-            camera.addYawPitch((float)dx, (float)dy);
+        glfwSetCursorPosCallback(window, (win, mx, my) -> {
+            if (!mouseCaptured) return;
+            if (Double.isNaN(lastMouseX)) {
+                lastMouseX = mx;
+                lastMouseY = my;
+            }
+            double dx = mx - lastMouseX, dy = my - lastMouseY;
+            lastMouseX = mx;
+            lastMouseY = my;
+            camera.addYawPitch((float) dx, (float) dy);
         });
 
-        glfwSetKeyCallback(window, (win,key,sc,action,mods)->{
-            if (action==GLFW_PRESS){
-                if (key==GLFW_KEY_ESCAPE){
-                    mouseCaptured=!mouseCaptured;
-                    glfwSetInputMode(window, GLFW_CURSOR, mouseCaptured?GLFW_CURSOR_DISABLED:GLFW_CURSOR_NORMAL);
+        glfwSetKeyCallback(window, (win, key, sc, action, mods) -> {
+            if (action == GLFW_PRESS) {
+                if (key == GLFW_KEY_ESCAPE) {
+                    mouseCaptured = !mouseCaptured;
+                    glfwSetInputMode(window, GLFW_CURSOR, mouseCaptured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
                 }
-                if (key==GLFW_KEY_E){
-                    placeBlock = switch (placeBlock){
+                if (key == GLFW_KEY_E) {
+                    placeBlock = switch (placeBlock) {
                         case Blocks.GRASS -> Blocks.DIRT;
-                        case Blocks.DIRT  -> Blocks.STONE;
+                        case Blocks.DIRT -> Blocks.STONE;
                         case Blocks.STONE -> Blocks.SAND;
-                        case Blocks.SAND  -> Blocks.SNOW;
+                        case Blocks.SAND -> Blocks.SNOW;
                         default -> Blocks.GRASS;
                     };
                 }
-                if (key==GLFW_KEY_R){
-                    int rw = Math.max(1, (int)(width*resolutionScale));
-                    int rh = Math.max(1, (int)(height*resolutionScale));
-                    Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
+                if (key == GLFW_KEY_R) {
+                    int rw = Math.max(1, (int) (width * resolutionScale));
+                    int rh = Math.max(1, (int) (height * resolutionScale));
+                    Matrix4f proj = new Matrix4f().perspective((float) Math.toRadians(75.0), (float) rw / rh, 0.1f, 800.0f);
                     Matrix4f view = camera.viewMatrix();
                     Frustum frustum = buildFrustum(proj, view);
-                    region.rebuildAround((int)Math.floor(camera.position.x),
-                                         (int)Math.floor(camera.position.y),
-                                         (int)Math.floor(camera.position.z),
-                                         frustum);
+                    region.rebuildAround((int) Math.floor(camera.position.x),
+                            (int) Math.floor(camera.position.y),
+                            (int) Math.floor(camera.position.z),
+                            frustum);
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                 }
-                if (key==GLFW_KEY_G){ debugGradient = !debugGradient; System.out.println("[DEBUG] debugGradient="+debugGradient); }
-                if (key==GLFW_KEY_P){ presentTest = !presentTest; System.out.println("[DEBUG] presentTest="+presentTest); }
-                if (key==GLFW_KEY_C){ computeEnabled = !computeEnabled; System.out.println("[DEBUG] computeEnabled="+computeEnabled); }
-                if (key==GLFW_KEY_H){ useGPUWorld = !useGPUWorld; System.out.println("[DEBUG] useGPUWorld="+useGPUWorld); }
-                if (key==GLFW_KEY_KP_ADD || key==GLFW_KEY_EQUAL){ resolutionScale=Math.min(2.0f,resolutionScale+0.1f); recreateOutputTexture(); }
-                if (key==GLFW_KEY_KP_SUBTRACT || key==GLFW_KEY_MINUS){ resolutionScale=Math.max(0.5f,resolutionScale-0.1f); recreateOutputTexture(); }
+                if (key == GLFW_KEY_G) {
+                    debugGradient = !debugGradient;
+                    System.out.println("[DEBUG] debugGradient=" + debugGradient);
+                }
+                if (key == GLFW_KEY_P) {
+                    presentTest = !presentTest;
+                    System.out.println("[DEBUG] presentTest=" + presentTest);
+                }
+                if (key == GLFW_KEY_C) {
+                    computeEnabled = !computeEnabled;
+                    System.out.println("[DEBUG] computeEnabled=" + computeEnabled);
+                }
+                if (key == GLFW_KEY_H) {
+                    useGPUWorld = !useGPUWorld;
+                    System.out.println("[DEBUG] useGPUWorld=" + useGPUWorld);
+                }
+                if (key == GLFW_KEY_KP_ADD || key == GLFW_KEY_EQUAL) {
+                    resolutionScale = Math.min(2.0f, resolutionScale + 0.1f);
+                    recreateOutputTexture();
+                }
+                if (key == GLFW_KEY_KP_SUBTRACT || key == GLFW_KEY_MINUS) {
+                    resolutionScale = Math.max(0.5f, resolutionScale - 0.1f);
+                    recreateOutputTexture();
+                }
             }
         });
 
-        glfwSetMouseButtonCallback(window, (win,button,action,mods)->{
-            if (!mouseCaptured || action!=GLFW_PRESS) return;
-            Vector3f origin=new Vector3f(camera.position);
-            Vector3f dir=camera.getForward();
+        glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+            if (!mouseCaptured || action != GLFW_PRESS) return;
+            Vector3f origin = new Vector3f(camera.position);
+            Vector3f dir = camera.getForward();
             Raycast.Hit hit = Raycast.raycast(chunkManager, origin, dir, 8f);
-            if (hit!=null){
-                if (button==GLFW_MOUSE_BUTTON_LEFT){
-                    chunkManager.setEdit(hit.x,hit.y,hit.z, Blocks.AIR);
-                    region.setVoxelWorld(hit.x,hit.y,hit.z, Blocks.AIR);
-                } else if (button==GLFW_MOUSE_BUTTON_RIGHT){
-                    int px=hit.x+hit.nx, py=hit.y+hit.ny, pz=hit.z+hit.nz;
-                    chunkManager.setEdit(px,py,pz, placeBlock);
-                    region.setVoxelWorld(px,py,pz, placeBlock);
+            if (hit != null) {
+                if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                    chunkManager.setEdit(hit.x, hit.y, hit.z, Blocks.AIR);
+                    region.setVoxelWorld(hit.x, hit.y, hit.z, Blocks.AIR);
+                } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+                    int px = hit.x + hit.nx, py = hit.y + hit.ny, pz = hit.z + hit.nz;
+                    chunkManager.setEdit(px, py, pz, placeBlock);
+                    region.setVoxelWorld(px, py, pz, placeBlock);
                 }
             }
         });
@@ -174,47 +199,59 @@ public class Engine {
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     }
 
-    /** Performs basic OpenGL state setup after the GLFW context has been created. */
-    private void initGL(){
+    /**
+     * Performs basic OpenGL state setup after the GLFW context has been created.
+     */
+    private void initGL() {
         GL.createCapabilities();
         System.out.println("OpenGL: " + glGetString(GL_VERSION));
         System.out.println("GPU: " + glGetString(GL_RENDERER));
-        glClearColor(0.12f,0.14f,0.18f,1.0f);
+        glClearColor(0.12f, 0.14f, 0.18f, 1.0f);
         glDisable(GL_CULL_FACE);
         glDisable(GL_DEPTH_TEST);
     }
 
-    /** Loads a text resource either from the classpath or directly from the resources directory. */
-    private String loadResource(String path){
-        try{
+    /**
+     * Loads a text resource either from the classpath or directly from the resources directory.
+     */
+    private String loadResource(String path) {
+        try {
             var is = Thread.currentThread().getContextClassLoader().getResourceAsStream(path);
-            if (is!=null) return new String(is.readAllBytes());
-            return Files.readString(Path.of("src/main/resources/"+path));
-        }catch(IOException e){ throw new RuntimeException("load "+path, e); }
+            if (is != null) return new String(is.readAllBytes());
+            return Files.readString(Path.of("src/main/resources/" + path));
+        } catch (IOException e) {
+            throw new RuntimeException("load " + path, e);
+        }
     }
 
-    /** Compiles a shader of the given type and prints a detailed log when compilation fails. */
-    private int compileShader(int type,String src){
-        int id=glCreateShader(type); glShaderSource(id, src); glCompileShader(id);
-        if (glGetShaderi(id, GL_COMPILE_STATUS)!=GL_TRUE){
+    /**
+     * Compiles a shader of the given type and prints a detailed log when compilation fails.
+     */
+    private int compileShader(int type, String src) {
+        int id = glCreateShader(type);
+        glShaderSource(id, src);
+        glCompileShader(id);
+        if (glGetShaderi(id, GL_COMPILE_STATUS) != GL_TRUE) {
             String log = glGetShaderInfoLog(id);
             System.err.println("=== SHADER COMPILE FAILED ===");
             System.err.println(log);
             String[] lines = src.split("\r?\n", -1);
-            for (int i=0;i<lines.length;i++){
-                String n = String.format("%03d", i+1);
+            for (int i = 0; i < lines.length; i++) {
+                String n = String.format("%03d", i + 1);
                 System.err.println(n + ": " + lines[i]);
             }
-            throw new RuntimeException("Shader compile error: "+log);
+            throw new RuntimeException("Shader compile error: " + log);
         }
         return id;
     }
-    private int linkProgram(int... shaders){
-        int prog=glCreateProgram();
-        for(int s: shaders) glAttachShader(prog,s);
+
+    private int linkProgram(int... shaders) {
+        int prog = glCreateProgram();
+        for (int s : shaders) glAttachShader(prog, s);
         glLinkProgram(prog);
-        if (glGetProgrami(prog, GL_LINK_STATUS)!=GL_TRUE) throw new RuntimeException("Link error: "+glGetProgramInfoLog(prog));
-        for(int s: shaders) glDeleteShader(s);
+        if (glGetProgrami(prog, GL_LINK_STATUS) != GL_TRUE)
+            throw new RuntimeException("Link error: " + glGetProgramInfoLog(prog));
+        for (int s : shaders) glDeleteShader(s);
         return prog;
     }
 
@@ -223,7 +260,7 @@ public class Engine {
             int b = cm.sample(x, y, z);
             if (b != Blocks.AIR) {
                 boolean headFree = (y + 1 < Chunk.SY && cm.sample(x, y + 1, z) == Blocks.AIR)
-                                 && (y + 2 >= Chunk.SY || cm.sample(x, y + 2, z) == Blocks.AIR);
+                        && (y + 2 >= Chunk.SY || cm.sample(x, y + 2, z) == Blocks.AIR);
                 if (headFree) return y;
             }
         }
@@ -233,10 +270,10 @@ public class Engine {
     /**
      * Allocates OpenGL resources, loads shaders and seeds the world generation structures.
      */
-    private void initResources(){
+    private void initResources() {
         computeProgram = linkProgram(compileShader(GL_COMPUTE_SHADER, loadResource("shaders/voxel.comp")));
         quadProgram = linkProgram(
-                compileShader(GL_VERTEX_SHADER,   loadResource("shaders/quad.vert")),
+                compileShader(GL_VERTEX_SHADER, loadResource("shaders/quad.vert")),
                 compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/quad.frag"))
         );
         cacheComputeUniformLocations();
@@ -255,22 +292,22 @@ public class Engine {
         camera.position.set(spawnX + 0.5f, topY + 2.5f, spawnZ + 0.5f);
 
         region = new ActiveRegion(chunkManager, 128, 128, 128);
-        int rw = Math.max(1, (int)(width*resolutionScale));
-        int rh = Math.max(1, (int)(height*resolutionScale));
-        Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
+        int rw = Math.max(1, (int) (width * resolutionScale));
+        int rh = Math.max(1, (int) (height * resolutionScale));
+        Matrix4f proj = new Matrix4f().perspective((float) Math.toRadians(75.0), (float) rw / rh, 0.1f, 800.0f);
         Matrix4f view = camera.viewMatrix();
         Frustum frustum = buildFrustum(proj, view);
-        region.rebuildAround((int)Math.floor(camera.position.x),
-                             (int)Math.floor(camera.position.y),
-                             (int)Math.floor(camera.position.z),
-                             frustum);
+        region.rebuildAround((int) Math.floor(camera.position.x),
+                (int) Math.floor(camera.position.y),
+                (int) Math.floor(camera.position.z),
+                frustum);
         ssboVoxels = region.ssbo();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
         ssboVoxelsCoarse = region.ssboCoarse();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
     }
 
-    private void cacheComputeUniformLocations(){
+    private void cacheComputeUniformLocations() {
         locComputeSkyModel = glGetUniformLocation(computeProgram, "uSkyModel");
         locComputeTurbidity = glGetUniformLocation(computeProgram, "uTurbidity");
         locComputeSkyIntensity = glGetUniformLocation(computeProgram, "uSkyIntensity");
@@ -298,33 +335,40 @@ public class Engine {
         locComputeUseGPUWorld = glGetUniformLocation(computeProgram, "uUseGPUWorld");
     }
 
-    private void cacheQuadUniformLocations(){
+    private void cacheQuadUniformLocations() {
         locQuadTex = glGetUniformLocation(quadProgram, "uTex");
         locQuadScreenSize = glGetUniformLocation(quadProgram, "uScreenSize");
         locQuadPresentTest = glGetUniformLocation(quadProgram, "uPresentTest");
     }
 
-    private void createOutputTexture(){
-        if (outputTex!=0) glDeleteTextures(outputTex);
-        int rw = Math.max(1, (int)(width*resolutionScale));
-        int rh = Math.max(1, (int)(height*resolutionScale));
+    private void createOutputTexture() {
+        if (outputTex != 0) glDeleteTextures(outputTex);
+        int rw = Math.max(1, (int) (width * resolutionScale));
+        int rh = Math.max(1, (int) (height * resolutionScale));
         outputTex = glGenTextures();
         glBindTexture(GL_TEXTURE_2D, outputTex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rw, rh, 0, GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer)null);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rw, rh, 0, GL_RGBA, GL_UNSIGNED_BYTE, (ByteBuffer) null);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
-    private void recreateOutputTexture(){ createOutputTexture(); }
 
-    /** Main render loop – processes input, updates camera movement and dispatches rendering. */
-    private void loop(){
+    private void recreateOutputTexture() {
+        createOutputTexture();
+    }
+
+    /**
+     * Main render loop – processes input, updates camera movement and dispatches rendering.
+     */
+    private void loop() {
         double lastTime = glfwGetTime();
         double lastPrint = lastTime;
         double fpsTimer = lastTime;
         int fpsFrames = 0;
-        while(!glfwWindowShouldClose(window)){
-            double now=glfwGetTime(); float dt=(float)(now-lastTime); lastTime=now;
+        while (!glfwWindowShouldClose(window)) {
+            double now = glfwGetTime();
+            float dt = (float) (now - lastTime);
+            lastTime = now;
             fpsFrames++;
 
             glClear(GL_COLOR_BUFFER_BIT);
@@ -333,25 +377,25 @@ public class Engine {
             chunkManager.update();
             boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
 
-            int cx=(int)Math.floor(camera.position.x);
-            int cy=(int)Math.floor(camera.position.y);
-            int cz=(int)Math.floor(camera.position.z);
-            int margin=24;
-            int rw = Math.max(1, (int)(width*resolutionScale));
-            int rh = Math.max(1, (int)(height*resolutionScale));
-            Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
+            int cx = (int) Math.floor(camera.position.x);
+            int cy = (int) Math.floor(camera.position.y);
+            int cz = (int) Math.floor(camera.position.z);
+            int margin = 24;
+            int rw = Math.max(1, (int) (width * resolutionScale));
+            int rh = Math.max(1, (int) (height * resolutionScale));
+            Matrix4f proj = new Matrix4f().perspective((float) Math.toRadians(75.0), (float) rw / rh, 0.1f, 800.0f);
             Matrix4f view = camera.viewMatrix();
             Matrix4f invProj = new Matrix4f(proj).invert();
             Matrix4f invView = new Matrix4f(view).invert();
 
             boolean needsRegionRebuild = loadedNewChunks ||
-                    cx < region.originX+margin || cz < region.originZ+margin ||
-                    cx > region.originX+region.rx-margin || cz > region.originZ+region.rz-margin ||
-                    cy < region.originY+margin || cy > region.originY+region.ry-margin;
+                    cx < region.originX + margin || cz < region.originZ + margin ||
+                    cx > region.originX + region.rx - margin || cz > region.originZ + region.rz - margin ||
+                    cy < region.originY + margin || cy > region.originY + region.ry - margin;
 
             if (needsRegionRebuild) {
                 Frustum frustum = buildFrustum(proj, view);
-                region.rebuildAround(cx,cy,cz, frustum);
+                region.rebuildAround(cx, cy, cz, frustum);
                 ssboVoxels = region.ssbo();
                 ssboVoxelsCoarse = region.ssboCoarse();
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
@@ -359,18 +403,20 @@ public class Engine {
             }
 
             // Compute pass
-            if (computeEnabled){
+            if (computeEnabled) {
                 glUseProgram(computeProgram);
                 if (locComputeSkyModel >= 0) glUniform1i(locComputeSkyModel, 1);         // Preetham
                 if (locComputeTurbidity >= 0) glUniform1f(locComputeTurbidity, 2.5f);    // mild clear sky
                 if (locComputeSkyIntensity >= 0) glUniform1f(locComputeSkyIntensity, 1.0f);
-                if (locComputeSkyZenith >= 0) glUniform3f(locComputeSkyZenith, 0.60f, 0.70f, 0.90f);   // fallback gradient
+                if (locComputeSkyZenith >= 0)
+                    glUniform3f(locComputeSkyZenith, 0.60f, 0.70f, 0.90f);   // fallback gradient
                 if (locComputeSkyHorizon >= 0) glUniform3f(locComputeSkyHorizon, 0.95f, 0.80f, 0.60f);
                 if (locComputeSunAngularRadius >= 0) glUniform1f(locComputeSunAngularRadius, 0.00465f);    // ~0.266°
                 if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, 8);
 
                 if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 1);
-                if (locComputeTorchPos >= 0) glUniform3f(locComputeTorchPos, camera.position.x, camera.position.y, camera.position.z);
+                if (locComputeTorchPos >= 0)
+                    glUniform3f(locComputeTorchPos, camera.position.x, camera.position.y, camera.position.z);
                 if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 30.0f);
                 if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.15f);
                 if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 8);
@@ -381,13 +427,16 @@ public class Engine {
                 uploadMatrix(locComputeInvView, invView);
 
                 if (locComputeWorldSize >= 0) glUniform3i(locComputeWorldSize, region.rx, region.ry, region.rz);
-                if (locComputeWorldSizeCoarse >= 0) glUniform3i(locComputeWorldSizeCoarse, region.rxCoarse(), region.ryCoarse(), region.rzCoarse());
-                if (locComputeRegionOrigin >= 0) glUniform3i(locComputeRegionOrigin, region.originX, region.originY, region.originZ);
+                if (locComputeWorldSizeCoarse >= 0)
+                    glUniform3i(locComputeWorldSizeCoarse, region.rxCoarse(), region.ryCoarse(), region.rzCoarse());
+                if (locComputeRegionOrigin >= 0)
+                    glUniform3i(locComputeRegionOrigin, region.originX, region.originY, region.originZ);
                 if (locComputeVoxelScale >= 0) glUniform1f(locComputeVoxelScale, 1.0f);
                 if (locComputeLodScale >= 0) glUniform1f(locComputeLodScale, region.lodScale());
                 if (locComputeLodSwitchDistance >= 0) glUniform1f(locComputeLodSwitchDistance, lodSwitchDistance);
-                if (locComputeCamPos >= 0) glUniform3f(locComputeCamPos, camera.position.x, camera.position.y, camera.position.z);
-                Vector3f sunDir = new Vector3f(-0.6f,-1.0f,-0.3f).normalize();
+                if (locComputeCamPos >= 0)
+                    glUniform3f(locComputeCamPos, camera.position.x, camera.position.y, camera.position.z);
+                Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
                 if (locComputeSunDir >= 0) glUniform3f(locComputeSunDir, sunDir.x, sunDir.y, sunDir.z);
                 if (locComputeResolution >= 0) glUniform2i(locComputeResolution, rw, rh);
                 if (locComputeDebugGradient >= 0) glUniform1i(locComputeDebugGradient, debugGradient ? 1 : 0);
@@ -395,14 +444,14 @@ public class Engine {
 
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
-                int gx=(rw+15)/16, gy=(rh+15)/16;
-                glDispatchCompute(gx,gy,1);
+                int gx = (rw + 15) / 16, gy = (rh + 15) / 16;
+                glDispatchCompute(gx, gy, 1);
                 glUseProgram(0);
                 glMemoryBarrier(GL_ALL_BARRIER_BITS);
             }
 
             // Present
-            glViewport(0,0,width,height);
+            glViewport(0, 0, width, height);
             glUseProgram(quadProgram);
             glBindVertexArray(vaoQuad);
             glActiveTexture(GL_TEXTURE0);
@@ -431,39 +480,41 @@ public class Engine {
         }
     }
 
-    private void pollInput(float dt){
-        float speed = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT)==GLFW_PRESS ? 12f : 6f;
+    private void pollInput(float dt) {
+        float speed = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 12f : 6f;
         Vector3f f = camera.getForward();
-        Vector3f r = new Vector3f(f).cross(0,1,0).normalize();
-        Vector3f u = new Vector3f(0,1,0);
+        Vector3f r = new Vector3f(f).cross(0, 1, 0).normalize();
+        Vector3f u = new Vector3f(0, 1, 0);
         Vector3f wish = new Vector3f();
-        if (glfwGetKey(window, GLFW_KEY_W)==GLFW_PRESS) wish.z -= 1;
-        if (glfwGetKey(window, GLFW_KEY_S)==GLFW_PRESS) wish.z += 1;
-        if (glfwGetKey(window, GLFW_KEY_A)==GLFW_PRESS) wish.x -= 1;
-        if (glfwGetKey(window, GLFW_KEY_D)==GLFW_PRESS) wish.x += 1;
-        if (glfwGetKey(window, GLFW_KEY_SPACE)==GLFW_PRESS) wish.y += 1;
-        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL)==GLFW_PRESS) wish.y -= 1;
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) wish.z -= 1;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) wish.z += 1;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) wish.x -= 1;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) wish.x += 1;
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) wish.y += 1;
+        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) wish.y -= 1;
         Vector3f vel = new Vector3f();
         vel.fma(wish.z, f).fma(wish.x, r).fma(wish.y, u);
-        if (vel.lengthSquared()>0) vel.normalize(speed);
+        if (vel.lengthSquared() > 0) vel.normalize(speed);
         Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
     }
 
-    private Frustum buildFrustum(Matrix4f proj, Matrix4f view){
+    private Frustum buildFrustum(Matrix4f proj, Matrix4f view) {
         return Frustum.fromMatrix(new Matrix4f(proj).mul(view));
     }
 
-    private void uploadMatrix(int location, Matrix4f m){
+    private void uploadMatrix(int location, Matrix4f m) {
         if (location < 0) return;
-        try(MemoryStack stack = stackPush()){
+        try (MemoryStack stack = stackPush()) {
             FloatBuffer fb = stack.mallocFloat(16);
             m.get(fb);
             glUniformMatrix4fv(location, false, fb);
         }
     }
 
-    /** Releases OpenGL resources and destroys the GLFW window. */
-    private void cleanup(){
+    /**
+     * Releases OpenGL resources and destroys the GLFW window.
+     */
+    private void cleanup() {
         glDeleteProgram(computeProgram);
         glDeleteProgram(quadProgram);
         glDeleteTextures(outputTex);

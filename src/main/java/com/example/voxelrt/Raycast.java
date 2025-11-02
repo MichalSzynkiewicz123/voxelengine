@@ -14,10 +14,10 @@ public class Raycast {
     /**
      * Casts a ray through the world and returns the first non-air block along the ray.
      *
-     * @param cm       chunk manager used to sample blocks along the ray
-     * @param origin   starting position in world space
-     * @param dir      direction of the ray (does not need to be normalized)
-     * @param maxDist  maximum distance to march before giving up
+     * @param cm      chunk manager used to sample blocks along the ray
+     * @param origin  starting position in world space
+     * @param dir     direction of the ray (does not need to be normalized)
+     * @param maxDist maximum distance to march before giving up
      * @return details about the block that was hit or {@code null} when no solid block was found
      */
     public static Hit raycast(ChunkManager cm, Vector3f origin, Vector3f dir, float maxDist) {

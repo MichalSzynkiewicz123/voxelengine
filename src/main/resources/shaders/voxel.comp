@@ -11,7 +11,7 @@ uniform ivec3 uRegionOrigin;
 uniform vec3  uCamPos;
 uniform mat4  uInvProj;
 uniform mat4  uInvView;
-uniform vec3  uSunDir;          // normalized
+uniform vec3  uSunDir;// normalized
 uniform ivec2 uResolution;
 uniform float uVoxelScale;
 uniform float uLodScale;
@@ -19,21 +19,21 @@ uniform float uLodSwitchDistance;
 uniform int   uDebugGradient;
 
 // Sky model / Preetham
-uniform int   uSkyModel;        // 0=gradient, 1=Preetham
-uniform float uTurbidity;       // ~2–3 clear, 6–8 hazy
-uniform vec3  uSkyZenith;       // fallback gradient top
-uniform vec3  uSkyHorizon;      // fallback gradient bottom
-uniform float uSkyIntensity;    // global sky multiplier
+uniform int   uSkyModel;// 0=gradient, 1=Preetham
+uniform float uTurbidity;// ~2–3 clear, 6–8 hazy
+uniform vec3  uSkyZenith;// fallback gradient top
+uniform vec3  uSkyHorizon;// fallback gradient bottom
+uniform float uSkyIntensity;// global sky multiplier
 
 // Soft sun shadow params
-uniform float uSunAngularRadius; // radians (~0.00465)
-uniform int   uSunSoftSamples;   // 8–16 recommended
+uniform float uSunAngularRadius;// radians (~0.00465)
+uniform int   uSunSoftSamples;// 8–16 recommended
 
 // Player torch (soft point/area)
 uniform int   uTorchEnabled;
-uniform vec3  uTorchPos;        // world voxel coords
+uniform vec3  uTorchPos;// world voxel coords
 uniform float uTorchIntensity;
-uniform float uTorchRadius;     // area radius
+uniform float uTorchRadius;// area radius
 uniform int   uTorchSoftSamples;
 
 // -------- constants / utils --------
@@ -49,8 +49,8 @@ vec3 skyGradient(vec3 dir){
 }
 
 void makeONB(in vec3 n, out vec3 t, out vec3 b){
-    if (abs(n.z) < 0.999) t = normalize(cross(n, vec3(0,0,1)));
-    else                  t = normalize(cross(n, vec3(0,1,0)));
+    if (abs(n.z) < 0.999) t = normalize(cross(n, vec3(0, 0, 1)));
+    else t = normalize(cross(n, vec3(0, 1, 0)));
     b = cross(n, t);
 }
 
@@ -80,19 +80,19 @@ void coeffsYc(float T, out float A, out float B, out float C, out float D, out f
 
 float zenithY(float T, float thetaS){
     float chi = (4.0/9.0 - T/120.0) * (PI - 2.0*thetaS);
-    return ((4.0453*T - 4.9710) * tan(chi) - 0.2155*T + 2.4192) * 1000.0; // cd/m^2
+    return ((4.0453*T - 4.9710) * tan(chi) - 0.2155*T + 2.4192) * 1000.0;// cd/m^2
 }
 float zenithx(float T, float thetaS){
     float t = thetaS;
-    return ( 0.00165*t*t*t - 0.00374*t*t + 0.00208*t ) * T*T
+    return (0.00165*t*t*t - 0.00374*t*t + 0.00208*t) * T*T
     + (-0.02902*t*t*t + 0.06377*t*t - 0.03202*t + 0.00394) * T
-    + ( 0.11693*t*t*t - 0.21196*t*t + 0.06052*t + 0.25885);
+    + (0.11693*t*t*t - 0.21196*t*t + 0.06052*t + 0.25885);
 }
 float zenithy(float T, float thetaS){
     float t = thetaS;
-    return ( 0.00275*t*t*t - 0.00610*t*t + 0.00317*t ) * T*T
+    return (0.00275*t*t*t - 0.00610*t*t + 0.00317*t) * T*T
     + (-0.04214*t*t*t + 0.08970*t*t - 0.04153*t + 0.00516) * T
-    + ( 0.15346*t*t*t - 0.26756*t*t + 0.06669*t + 0.26688);
+    + (0.15346*t*t*t - 0.26756*t*t + 0.06669*t + 0.26688);
 }
 
 vec3 preethamSkyRGB(vec3 dir, vec3 sunDir, float T){
@@ -104,9 +104,9 @@ vec3 preethamSkyRGB(vec3 dir, vec3 sunDir, float T){
     float gamma    = acos(clamp(dot(dir, sunDir), -1.0, 1.0));
 
     // Coeffs
-    float Ax,Bx,Cx,Dx,Ex; coeffsX(T,  Ax,Bx,Cx,Dx,Ex);
-    float Ay,By,Cy,Dy,Ey; coeffsYc(T, Ay,By,Cy,Dy,Ey);
-    float AY,BY,CY,DY,EY; coeffsY(T,  AY,BY,CY,DY,EY);
+    float Ax, Bx, Cx, Dx, Ex; coeffsX(T, Ax, Bx, Cx, Dx, Ex);
+    float Ay, By, Cy, Dy, Ey; coeffsYc(T, Ay, By, Cy, Dy, Ey);
+    float AY, BY, CY, DY, EY; coeffsY(T, AY, BY, CY, DY, EY);
 
     // Perez terms (normalized with zenith configuration)
     float denomX = (1.0 + Ax*exp(Bx) + Cx*exp(Dx*thetaS) + Ex*cos(thetaS)*cos(thetaS));
@@ -127,16 +127,16 @@ vec3 preethamSkyRGB(vec3 dir, vec3 sunDir, float T){
 
     float x = saturate(Px * xz);
     float y = saturate(Py * yz);
-    float Y = max(0.0, PY * Yz); // luminance
+    float Y = max(0.0, PY * Yz);// luminance
 
     // xyY -> XYZ
     float X = (y > 1e-5) ? (Y * x / y) : 0.0;
     float Z = (y > 1e-5) ? (Y * (1.0 - x - y) / y) : 0.0;
 
     // XYZ -> linear sRGB
-    vec3 rgb = mat3(  3.2406, -1.5372, -0.4986,
-    -0.9689,  1.8758,  0.0415,
-    0.0557, -0.2040,  1.0570) * vec3(X, Y, Z);
+    vec3 rgb = mat3(3.2406, -1.5372, -0.4986,
+    -0.9689, 1.8758, 0.0415,
+    0.0557, -0.2040, 1.0570) * vec3(X, Y, Z);
 
     // Bring into [0,1]-ish range (empirical scale; adjust with uSkyIntensity)
     rgb *= 1.0/60000.0;
@@ -205,16 +205,16 @@ float sunVisibility(vec3 pHit, vec3 n){
     float ndl = max(dot(n, S), 0.0);
     if (ndl <= 0.0) return 0.0;
 
-    vec3 T,B; makeONB(S, T, B);
+    vec3 T, B; makeONB(S, T, B);
     float halfAngle = uSunAngularRadius;
     int   N = max(uSunSoftSamples, 1);
 
     float vis = 0.0;
     for (int i=0; i<N; ++i){
         float u = (float(i)+0.5)/float(N);
-        float a = halfAngle * sqrt(u);     // concentrate samples near center
+        float a = halfAngle * sqrt(u);// concentrate samples near center
         float ang = GOLDEN_ANGLE * float(i);
-        vec2  d  = vec2(cos(ang), sin(ang)) * tan(a); // offset on tangent disk
+        vec2  d  = vec2(cos(ang), sin(ang)) * tan(a);// offset on tangent disk
         vec3  L  = normalize(S + d.x*T + d.y*B);
         bool  oc = traverseHitAny(pHit + L*1e-3, L);
         vis += oc ? 0.0 : 1.0;
@@ -231,7 +231,7 @@ float torchVisibilitySoft(vec3 pHit, vec3 Ldir, float dist){
     }
     vec3 center = uTorchPos;
     vec3 W = normalize(center - pHit);
-    vec3 T,B; makeONB(W, T, B);
+    vec3 T, B; makeONB(W, T, B);
 
     float sum = 0.0;
     for (int i=0; i<N; ++i){
@@ -247,11 +247,11 @@ float torchVisibilitySoft(vec3 pHit, vec3 Ldir, float dist){
 }
 
 vec3 blockColor(uint id){
-    if (id==1u) return vec3(0.27, 0.62, 0.23); // GRASS
-    if (id==2u) return vec3(0.35, 0.22, 0.12); // DIRT
-    if (id==3u) return vec3(0.50, 0.50, 0.50); // STONE
-    if (id==4u) return vec3(0.82, 0.76, 0.52); // SAND
-    if (id==5u) return vec3(0.95, 0.95, 0.97); // SNOW
+    if (id==1u) return vec3(0.27, 0.62, 0.23);// GRASS
+    if (id==2u) return vec3(0.35, 0.22, 0.12);// DIRT
+    if (id==3u) return vec3(0.50, 0.50, 0.50);// STONE
+    if (id==4u) return vec3(0.82, 0.76, 0.52);// SAND
+    if (id==5u) return vec3(0.95, 0.95, 0.97);// SNOW
     return vec3(0.0);
 }
 
@@ -266,7 +266,7 @@ vec3 computeSkyIrradiance(vec3 pHit, vec3 n){
         float phi = GOLDEN_ANGLE * float(i);
         float y = u;
         float r = sqrt(max(0.0, 1.0 - y*y));
-        vec3  L = vec3(cos(phi)*r, y, sin(phi)*r); // world-up oriented
+        vec3  L = vec3(cos(phi)*r, y, sin(phi)*r);// world-up oriented
         float k = max(dot(n, L), 0.0);
         if (k <= 0.0) continue;
         bool oc = traverseHitAny(pHit + L*1e-3, L);
@@ -310,7 +310,7 @@ void main(){
     // Primary ray
     vec2 uv = (vec2(gid) + vec2(0.5)) / vec2(uResolution) * 2.0 - 1.0;
     vec4 pNear = uInvProj * vec4(uv, -1.0, 1.0);
-    vec4 pFar  = uInvProj * vec4(uv,  1.0, 1.0);
+    vec4 pFar  = uInvProj * vec4(uv, 1.0, 1.0);
     pNear /= pNear.w; pFar /= pFar.w;
 
     vec3 ro = uCamPos;
@@ -325,7 +325,7 @@ void main(){
     float tEnter = max(max(t1.x, t1.y), t1.z);
     float tExit  = min(min(t2.x, t2.y), t2.z);
     if (tExit < max(tEnter, 0.0)){
-        imageStore(uOutput, gid, vec4(envSky(rd),1.0));
+        imageStore(uOutput, gid, vec4(envSky(rd), 1.0));
         return;
     }
 
@@ -334,8 +334,8 @@ void main(){
     vec3  dirStep = sign(rd);
     ivec3 stepI   = ivec3(dirStep);
     ivec3 off     = ivec3(stepI.x > 0 ? 1 : 0,
-                          stepI.y > 0 ? 1 : 0,
-                          stepI.z > 0 ? 1 : 0);
+    stepI.y > 0 ? 1 : 0,
+    stepI.z > 0 ? 1 : 0);
 
     vec3 lastN = vec3(0.0);
     bool hit = false;
