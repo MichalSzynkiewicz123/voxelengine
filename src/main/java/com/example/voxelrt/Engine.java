@@ -29,6 +29,31 @@ public class Engine {
     private float resolutionScale=1.0f;
 
     private int computeProgram, quadProgram;
+    private int locComputeSkyModel = -1;
+    private int locComputeTurbidity = -1;
+    private int locComputeSkyIntensity = -1;
+    private int locComputeSkyZenith = -1;
+    private int locComputeSkyHorizon = -1;
+    private int locComputeSunAngularRadius = -1;
+    private int locComputeSunSoftSamples = -1;
+    private int locComputeTorchEnabled = -1;
+    private int locComputeTorchPos = -1;
+    private int locComputeTorchIntensity = -1;
+    private int locComputeTorchRadius = -1;
+    private int locComputeTorchSoftSamples = -1;
+    private int locComputeInvProj = -1;
+    private int locComputeInvView = -1;
+    private int locComputeWorldSize = -1;
+    private int locComputeRegionOrigin = -1;
+    private int locComputeVoxelScale = -1;
+    private int locComputeCamPos = -1;
+    private int locComputeSunDir = -1;
+    private int locComputeResolution = -1;
+    private int locComputeDebugGradient = -1;
+    private int locComputeUseGPUWorld = -1;
+    private int locQuadTex = -1;
+    private int locQuadScreenSize = -1;
+    private int locQuadPresentTest = -1;
     private int outputTex, vaoQuad;
     private int ssboVoxels;
 
@@ -203,6 +228,8 @@ public class Engine {
                 compileShader(GL_VERTEX_SHADER,   loadResource("shaders/quad.vert")),
                 compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/quad.frag"))
         );
+        cacheComputeUniformLocations();
+        cacheQuadUniformLocations();
 
         vaoQuad = glGenVertexArrays();
         createOutputTexture();
@@ -222,6 +249,37 @@ public class Engine {
                              (int)Math.floor(camera.position.z));
         ssboVoxels = region.ssbo();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
+    }
+
+    private void cacheComputeUniformLocations(){
+        locComputeSkyModel = glGetUniformLocation(computeProgram, "uSkyModel");
+        locComputeTurbidity = glGetUniformLocation(computeProgram, "uTurbidity");
+        locComputeSkyIntensity = glGetUniformLocation(computeProgram, "uSkyIntensity");
+        locComputeSkyZenith = glGetUniformLocation(computeProgram, "uSkyZenith");
+        locComputeSkyHorizon = glGetUniformLocation(computeProgram, "uSkyHorizon");
+        locComputeSunAngularRadius = glGetUniformLocation(computeProgram, "uSunAngularRadius");
+        locComputeSunSoftSamples = glGetUniformLocation(computeProgram, "uSunSoftSamples");
+        locComputeTorchEnabled = glGetUniformLocation(computeProgram, "uTorchEnabled");
+        locComputeTorchPos = glGetUniformLocation(computeProgram, "uTorchPos");
+        locComputeTorchIntensity = glGetUniformLocation(computeProgram, "uTorchIntensity");
+        locComputeTorchRadius = glGetUniformLocation(computeProgram, "uTorchRadius");
+        locComputeTorchSoftSamples = glGetUniformLocation(computeProgram, "uTorchSoftSamples");
+        locComputeInvProj = glGetUniformLocation(computeProgram, "uInvProj");
+        locComputeInvView = glGetUniformLocation(computeProgram, "uInvView");
+        locComputeWorldSize = glGetUniformLocation(computeProgram, "uWorldSize");
+        locComputeRegionOrigin = glGetUniformLocation(computeProgram, "uRegionOrigin");
+        locComputeVoxelScale = glGetUniformLocation(computeProgram, "uVoxelScale");
+        locComputeCamPos = glGetUniformLocation(computeProgram, "uCamPos");
+        locComputeSunDir = glGetUniformLocation(computeProgram, "uSunDir");
+        locComputeResolution = glGetUniformLocation(computeProgram, "uResolution");
+        locComputeDebugGradient = glGetUniformLocation(computeProgram, "uDebugGradient");
+        locComputeUseGPUWorld = glGetUniformLocation(computeProgram, "uUseGPUWorld");
+    }
+
+    private void cacheQuadUniformLocations(){
+        locQuadTex = glGetUniformLocation(quadProgram, "uTex");
+        locQuadScreenSize = glGetUniformLocation(quadProgram, "uScreenSize");
+        locQuadPresentTest = glGetUniformLocation(quadProgram, "uPresentTest");
     }
 
     private void createOutputTexture(){
@@ -264,33 +322,19 @@ public class Engine {
             // Compute pass
             if (computeEnabled){
                 glUseProgram(computeProgram);
-        // === Sky & soft-shadow defaults ===
-        int locSkyModel = glGetUniformLocation(computeProgram, "uSkyModel");
-        int locTurb     = glGetUniformLocation(computeProgram, "uTurbidity");
-        int locSkyInt   = glGetUniformLocation(computeProgram, "uSkyIntensity");
-        int locSkyZen   = glGetUniformLocation(computeProgram, "uSkyZenith");
-        int locSkyHor   = glGetUniformLocation(computeProgram, "uSkyHorizon");
-        int locSunAng   = glGetUniformLocation(computeProgram, "uSunAngularRadius");
-        int locSunSamp  = glGetUniformLocation(computeProgram, "uSunSoftSamples");
-        if (locSkyModel >= 0) glUniform1i(locSkyModel, 1);         // Preetham
-        if (locTurb     >= 0) glUniform1f(locTurb, 2.5f);          // mild clear sky
-        if (locSkyInt   >= 0) glUniform1f(locSkyInt, 1.0f);
-        if (locSkyZen   >= 0) glUniform3f(locSkyZen, 0.60f, 0.70f, 0.90f);   // fallback gradient
-        if (locSkyHor   >= 0) glUniform3f(locSkyHor, 0.95f, 0.80f, 0.60f);
-        if (locSunAng   >= 0) glUniform1f(locSunAng, 0.00465f);    // ~0.266° in radians
-        if (locSunSamp  >= 0) glUniform1i(locSunSamp, 8);
+                if (locComputeSkyModel >= 0) glUniform1i(locComputeSkyModel, 1);         // Preetham
+                if (locComputeTurbidity >= 0) glUniform1f(locComputeTurbidity, 2.5f);    // mild clear sky
+                if (locComputeSkyIntensity >= 0) glUniform1f(locComputeSkyIntensity, 1.0f);
+                if (locComputeSkyZenith >= 0) glUniform3f(locComputeSkyZenith, 0.60f, 0.70f, 0.90f);   // fallback gradient
+                if (locComputeSkyHorizon >= 0) glUniform3f(locComputeSkyHorizon, 0.95f, 0.80f, 0.60f);
+                if (locComputeSunAngularRadius >= 0) glUniform1f(locComputeSunAngularRadius, 0.00465f);    // ~0.266°
+                if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, 8);
 
-        // === Torch defaults (player-held) ===
-        int locTorchEn  = glGetUniformLocation(computeProgram, "uTorchEnabled");
-        int locTorchPos = glGetUniformLocation(computeProgram, "uTorchPos");
-        int locTorchI   = glGetUniformLocation(computeProgram, "uTorchIntensity");
-        int locTorchR   = glGetUniformLocation(computeProgram, "uTorchRadius");
-        int locTorchS   = glGetUniformLocation(computeProgram, "uTorchSoftSamples");
-        if (locTorchEn  >= 0) glUniform1i(locTorchEn, 1);
-        if (locTorchPos >= 0) glUniform3f(locTorchPos, camera.position.x, camera.position.y, camera.position.z);
-        if (locTorchI   >= 0) glUniform1f(locTorchI, 30.0f);
-        if (locTorchR   >= 0) glUniform1f(locTorchR, 0.15f);
-        if (locTorchS   >= 0) glUniform1i(locTorchS, 8);
+                if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 1);
+                if (locComputeTorchPos >= 0) glUniform3f(locComputeTorchPos, camera.position.x, camera.position.y, camera.position.z);
+                if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 30.0f);
+                if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.15f);
+                if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 8);
 
                 int rw = Math.max(1, (int)(width*resolutionScale));
                 int rh = Math.max(1, (int)(height*resolutionScale));
@@ -299,18 +343,18 @@ public class Engine {
                 Matrix4f proj = new Matrix4f().perspective((float)Math.toRadians(75.0), (float)rw/rh, 0.1f, 800.0f);
                 Matrix4f invProj = new Matrix4f(proj).invert();
                 Matrix4f invView = new Matrix4f(camera.viewMatrix()).invert();
-                uploadMatrix(computeProgram, "uInvProj", invProj);
-                uploadMatrix(computeProgram, "uInvView", invView);
+                uploadMatrix(locComputeInvProj, invProj);
+                uploadMatrix(locComputeInvView, invView);
 
-                glUniform3i(glGetUniformLocation(computeProgram, "uWorldSize"), region.rx, region.ry, region.rz);
-                glUniform3i(glGetUniformLocation(computeProgram, "uRegionOrigin"), region.originX, region.originY, region.originZ);
-                glUniform1f(glGetUniformLocation(computeProgram, "uVoxelScale"), 1.0f);
-                glUniform3f(glGetUniformLocation(computeProgram, "uCamPos"), camera.position.x, camera.position.y, camera.position.z);
+                if (locComputeWorldSize >= 0) glUniform3i(locComputeWorldSize, region.rx, region.ry, region.rz);
+                if (locComputeRegionOrigin >= 0) glUniform3i(locComputeRegionOrigin, region.originX, region.originY, region.originZ);
+                if (locComputeVoxelScale >= 0) glUniform1f(locComputeVoxelScale, 1.0f);
+                if (locComputeCamPos >= 0) glUniform3f(locComputeCamPos, camera.position.x, camera.position.y, camera.position.z);
                 Vector3f sunDir = new Vector3f(-0.6f,-1.0f,-0.3f).normalize();
-                glUniform3f(glGetUniformLocation(computeProgram, "uSunDir"), sunDir.x, sunDir.y, sunDir.z);
-                glUniform2i(glGetUniformLocation(computeProgram, "uResolution"), rw, rh);
-                glUniform1i(glGetUniformLocation(computeProgram, "uDebugGradient"), debugGradient ? 1 : 0);
-                glUniform1i(glGetUniformLocation(computeProgram, "uUseGPUWorld"), useGPUWorld ? 1 : 0);
+                if (locComputeSunDir >= 0) glUniform3f(locComputeSunDir, sunDir.x, sunDir.y, sunDir.z);
+                if (locComputeResolution >= 0) glUniform2i(locComputeResolution, rw, rh);
+                if (locComputeDebugGradient >= 0) glUniform1i(locComputeDebugGradient, debugGradient ? 1 : 0);
+                if (locComputeUseGPUWorld >= 0) glUniform1i(locComputeUseGPUWorld, useGPUWorld ? 1 : 0);
 
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                 int gx=(rw+15)/16, gy=(rh+15)/16;
@@ -325,9 +369,9 @@ public class Engine {
             glBindVertexArray(vaoQuad);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, outputTex);
-            glUniform1i(glGetUniformLocation(quadProgram, "uTex"), 0);
-            glUniform2i(glGetUniformLocation(quadProgram, "uScreenSize"), width, height);
-            glUniform1i(glGetUniformLocation(quadProgram, "uPresentTest"), presentTest ? 1 : 0);
+            if (locQuadTex >= 0) glUniform1i(locQuadTex, 0);
+            if (locQuadScreenSize >= 0) glUniform2i(locQuadScreenSize, width, height);
+            if (locQuadPresentTest >= 0) glUniform1i(locQuadPresentTest, presentTest ? 1 : 0);
             glDrawArrays(GL_TRIANGLES, 0, 3);
 
             if (now - lastPrint > 1.0) {
@@ -367,12 +411,12 @@ public class Engine {
         Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
     }
 
-    private void uploadMatrix(int program,String name, Matrix4f m){
-        int loc = glGetUniformLocation(program, name);
+    private void uploadMatrix(int location, Matrix4f m){
+        if (location < 0) return;
         try(MemoryStack stack = stackPush()){
             FloatBuffer fb = stack.mallocFloat(16);
             m.get(fb);
-            glUniformMatrix4fv(loc, false, fb);
+            glUniformMatrix4fv(location, false, fb);
         }
     }
 
