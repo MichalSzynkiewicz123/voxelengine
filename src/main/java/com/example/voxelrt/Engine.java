@@ -44,8 +44,11 @@ public class Engine {
     private int locComputeInvProj = -1;
     private int locComputeInvView = -1;
     private int locComputeWorldSize = -1;
+    private int locComputeWorldSizeCoarse = -1;
     private int locComputeRegionOrigin = -1;
     private int locComputeVoxelScale = -1;
+    private int locComputeLodScale = -1;
+    private int locComputeLodSwitchDistance = -1;
     private int locComputeCamPos = -1;
     private int locComputeSunDir = -1;
     private int locComputeResolution = -1;
@@ -56,6 +59,7 @@ public class Engine {
     private int locQuadPresentTest = -1;
     private int outputTex, vaoQuad;
     private int ssboVoxels;
+    private int ssboVoxelsCoarse;
 
     private Camera camera = new Camera(new Vector3f(64, 120, 64));
     private boolean mouseCaptured = true;
@@ -70,6 +74,7 @@ public class Engine {
     private boolean presentTest=false;
     private boolean computeEnabled=true;
     private boolean useGPUWorld=false; // start with GPU fallback visible
+    private float lodSwitchDistance = 72.0f;
 
     /** Starts the engine and tears down the native resources when the loop exits. */
     public void run() {
@@ -261,6 +266,8 @@ public class Engine {
                              frustum);
         ssboVoxels = region.ssbo();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
+        ssboVoxelsCoarse = region.ssboCoarse();
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
     }
 
     private void cacheComputeUniformLocations(){
@@ -279,8 +286,11 @@ public class Engine {
         locComputeInvProj = glGetUniformLocation(computeProgram, "uInvProj");
         locComputeInvView = glGetUniformLocation(computeProgram, "uInvView");
         locComputeWorldSize = glGetUniformLocation(computeProgram, "uWorldSize");
+        locComputeWorldSizeCoarse = glGetUniformLocation(computeProgram, "uWorldSizeCoarse");
         locComputeRegionOrigin = glGetUniformLocation(computeProgram, "uRegionOrigin");
         locComputeVoxelScale = glGetUniformLocation(computeProgram, "uVoxelScale");
+        locComputeLodScale = glGetUniformLocation(computeProgram, "uLodScale");
+        locComputeLodSwitchDistance = glGetUniformLocation(computeProgram, "uLodSwitchDistance");
         locComputeCamPos = glGetUniformLocation(computeProgram, "uCamPos");
         locComputeSunDir = glGetUniformLocation(computeProgram, "uSunDir");
         locComputeResolution = glGetUniformLocation(computeProgram, "uResolution");
@@ -335,7 +345,10 @@ public class Engine {
                 cx > region.originX+region.rx-margin || cz > region.originZ+region.rz-margin ||
                 cy < region.originY+margin || cy > region.originY+region.ry-margin){
                 region.rebuildAround(cx,cy,cz, frustum);
+                ssboVoxels = region.ssbo();
+                ssboVoxelsCoarse = region.ssboCoarse();
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
             }
 
             // Compute pass
@@ -361,8 +374,11 @@ public class Engine {
                 uploadMatrix(locComputeInvView, invView);
 
                 if (locComputeWorldSize >= 0) glUniform3i(locComputeWorldSize, region.rx, region.ry, region.rz);
+                if (locComputeWorldSizeCoarse >= 0) glUniform3i(locComputeWorldSizeCoarse, region.rxCoarse(), region.ryCoarse(), region.rzCoarse());
                 if (locComputeRegionOrigin >= 0) glUniform3i(locComputeRegionOrigin, region.originX, region.originY, region.originZ);
                 if (locComputeVoxelScale >= 0) glUniform1f(locComputeVoxelScale, 1.0f);
+                if (locComputeLodScale >= 0) glUniform1f(locComputeLodScale, region.lodScale());
+                if (locComputeLodSwitchDistance >= 0) glUniform1f(locComputeLodSwitchDistance, lodSwitchDistance);
                 if (locComputeCamPos >= 0) glUniform3f(locComputeCamPos, camera.position.x, camera.position.y, camera.position.z);
                 Vector3f sunDir = new Vector3f(-0.6f,-1.0f,-0.3f).normalize();
                 if (locComputeSunDir >= 0) glUniform3f(locComputeSunDir, sunDir.x, sunDir.y, sunDir.z);
@@ -371,6 +387,7 @@ public class Engine {
                 if (locComputeUseGPUWorld >= 0) glUniform1i(locComputeUseGPUWorld, useGPUWorld ? 1 : 0);
 
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
                 int gx=(rw+15)/16, gy=(rh+15)/16;
                 glDispatchCompute(gx,gy,1);
                 glUseProgram(0);

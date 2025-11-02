@@ -17,8 +17,14 @@ public class ActiveRegion {
     public final int rx, ry, rz;
     public int originX, originY, originZ;
     private final int[] buf;
+    private final int[] bufCoarse;
     private int ssbo = 0;
+    private int ssboCoarse = 0;
     private final ChunkManager cm;
+    private final int lodScale = 2;
+    private final int rxCoarse;
+    private final int ryCoarse;
+    private final int rzCoarse;
 
     public ActiveRegion(ChunkManager cm, int rx, int ry, int rz) {
         this.cm = cm;
@@ -26,10 +32,78 @@ public class ActiveRegion {
         this.ry = ry;
         this.rz = rz;
         this.buf = new int[rx * ry * rz];
+        this.rxCoarse = (rx + lodScale - 1) / lodScale;
+        this.ryCoarse = (ry + lodScale - 1) / lodScale;
+        this.rzCoarse = (rz + lodScale - 1) / lodScale;
+        this.bufCoarse = new int[rxCoarse * ryCoarse * rzCoarse];
     }
 
     private int ridx(int x, int y, int z) {
         return x + y * rx + z * rx * ry;
+    }
+
+    private int ridxCoarse(int x, int y, int z) {
+        return x + y * rxCoarse + z * rxCoarse * ryCoarse;
+    }
+
+    private int rebuildCoarseCell(int cx, int cy, int cz) {
+        int x0 = cx * lodScale;
+        int y0 = cy * lodScale;
+        int z0 = cz * lodScale;
+        int countGrass = 0;
+        int countDirt = 0;
+        int countStone = 0;
+        int countSand = 0;
+        int countSnow = 0;
+        for (int dz = 0; dz < lodScale && z0 + dz < rz; dz++) {
+            for (int dy = 0; dy < lodScale && y0 + dy < ry; dy++) {
+                for (int dx = 0; dx < lodScale && x0 + dx < rx; dx++) {
+                    int id = buf[ridx(x0 + dx, y0 + dy, z0 + dz)];
+                    switch (id) {
+                        case Blocks.GRASS -> countGrass++;
+                        case Blocks.DIRT -> countDirt++;
+                        case Blocks.STONE -> countStone++;
+                        case Blocks.SAND -> countSand++;
+                        case Blocks.SNOW -> countSnow++;
+                        default -> {
+                        }
+                    }
+                }
+            }
+        }
+        int bestId = Blocks.AIR;
+        int bestCount = 0;
+        if (countGrass > bestCount) {
+            bestCount = countGrass;
+            bestId = Blocks.GRASS;
+        }
+        if (countDirt > bestCount) {
+            bestCount = countDirt;
+            bestId = Blocks.DIRT;
+        }
+        if (countStone > bestCount) {
+            bestCount = countStone;
+            bestId = Blocks.STONE;
+        }
+        if (countSand > bestCount) {
+            bestCount = countSand;
+            bestId = Blocks.SAND;
+        }
+        if (countSnow > bestCount) {
+            bestCount = countSnow;
+            bestId = Blocks.SNOW;
+        }
+        return bestCount == 0 ? Blocks.AIR : bestId;
+    }
+
+    private void rebuildCoarseBuffer() {
+        for (int cz = 0; cz < rzCoarse; cz++) {
+            for (int cy = 0; cy < ryCoarse; cy++) {
+                for (int cx = 0; cx < rxCoarse; cx++) {
+                    bufCoarse[ridxCoarse(cx, cy, cz)] = rebuildCoarseCell(cx, cy, cz);
+                }
+            }
+        }
     }
 
     /**
@@ -108,6 +182,7 @@ public class ActiveRegion {
                 }
             }
         }
+        rebuildCoarseBuffer();
         uploadAll();
     }
 
@@ -128,10 +203,45 @@ public class ActiveRegion {
             glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridx(x, y, z) * 4L, ib);
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         }
+
+        int cx = x / lodScale;
+        int cy = y / lodScale;
+        int cz = z / lodScale;
+        if (cx >= 0 && cy >= 0 && cz >= 0 && cx < rxCoarse && cy < ryCoarse && cz < rzCoarse) {
+            int coarseId = rebuildCoarseCell(cx, cy, cz);
+            bufCoarse[ridxCoarse(cx, cy, cz)] = coarseId;
+            if (ssboCoarse != 0) {
+                IntBuffer cb = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder()).asIntBuffer();
+                cb.put(0, coarseId);
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboCoarse);
+                glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridxCoarse(cx, cy, cz) * 4L, cb);
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            }
+        }
     }
 
     public int ssbo() {
         return ssbo;
+    }
+
+    public int ssboCoarse() {
+        return ssboCoarse;
+    }
+
+    public int rxCoarse() {
+        return rxCoarse;
+    }
+
+    public int ryCoarse() {
+        return ryCoarse;
+    }
+
+    public int rzCoarse() {
+        return rzCoarse;
+    }
+
+    public int lodScale() {
+        return lodScale;
     }
 
     private void uploadAll() {
@@ -141,6 +251,14 @@ public class ActiveRegion {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
         glBufferData(GL_SHADER_STORAGE_BUFFER, ib, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+        if (ssboCoarse == 0) ssboCoarse = glGenBuffers();
+        IntBuffer cb = ByteBuffer.allocateDirect(bufCoarse.length * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
+        cb.put(bufCoarse).flip();
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboCoarse);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, cb, GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboCoarse);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 }
