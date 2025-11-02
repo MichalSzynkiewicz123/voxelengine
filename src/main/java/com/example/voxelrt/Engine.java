@@ -17,6 +17,12 @@ import static org.lwjgl.opengl.GL46C.*;
 import static org.lwjgl.system.MemoryStack.*;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
+/**
+ * Main application driver that owns the GLFW window, OpenGL resources and game loop.
+ * <p>
+ * The engine sets up LWJGL bindings, feeds camera input, manages compute shaders and keeps the CPU
+ * and GPU representations of the world in sync.
+ */
 public class Engine {
     private long window;
     private int width=1280, height=720;
@@ -40,6 +46,7 @@ public class Engine {
     private boolean computeEnabled=true;
     private boolean useGPUWorld=false; // start with GPU fallback visible
 
+    /** Starts the engine and tears down the native resources when the loop exits. */
     public void run() {
         initWindow();
         initGL();
@@ -48,6 +55,9 @@ public class Engine {
         cleanup();
     }
 
+    /**
+     * Configures GLFW, opens the window and installs the input callbacks that feed the camera.
+     */
     private void initWindow(){
         if (!glfwInit()) throw new IllegalStateException("GLFW init failed");
         glfwDefaultWindowHints();
@@ -128,6 +138,7 @@ public class Engine {
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     }
 
+    /** Performs basic OpenGL state setup after the GLFW context has been created. */
     private void initGL(){
         GL.createCapabilities();
         System.out.println("OpenGL: " + glGetString(GL_VERSION));
@@ -137,6 +148,7 @@ public class Engine {
         glDisable(GL_DEPTH_TEST);
     }
 
+    /** Loads a text resource either from the classpath or directly from the resources directory. */
     private String loadResource(String path){
         try{
             var is = Thread.currentThread().getContextClassLoader().getResourceAsStream(path);
@@ -145,6 +157,7 @@ public class Engine {
         }catch(IOException e){ throw new RuntimeException("load "+path, e); }
     }
 
+    /** Compiles a shader of the given type and prints a detailed log when compilation fails. */
     private int compileShader(int type,String src){
         int id=glCreateShader(type); glShaderSource(id, src); glCompileShader(id);
         if (glGetShaderi(id, GL_COMPILE_STATUS)!=GL_TRUE){
@@ -181,6 +194,9 @@ public class Engine {
         return 64;
     }
 
+    /**
+     * Allocates OpenGL resources, loads shaders and seeds the world generation structures.
+     */
     private void initResources(){
         computeProgram = linkProgram(compileShader(GL_COMPUTE_SHADER, loadResource("shaders/voxel.comp")));
         quadProgram = linkProgram(
@@ -221,6 +237,7 @@ public class Engine {
     }
     private void recreateOutputTexture(){ createOutputTexture(); }
 
+    /** Main render loop – processes input, updates camera movement and dispatches rendering. */
     private void loop(){
         double lastTime = glfwGetTime();
         double lastPrint = lastTime;
@@ -349,6 +366,7 @@ public class Engine {
         }
     }
 
+    /** Releases OpenGL resources and destroys the GLFW window. */
     private void cleanup(){
         glDeleteProgram(computeProgram);
         glDeleteProgram(quadProgram);
