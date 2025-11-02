@@ -3,6 +3,7 @@ package com.example.voxelrt;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.util.Arrays;
 
 import static org.lwjgl.opengl.GL46C.*;
 
@@ -39,17 +40,71 @@ public class ActiveRegion {
      * entire data set is uploaded to the GPU via {@link #uploadAll()}.
      */
     public void rebuildAround(int cx, int cy, int cz) {
+        rebuildAround(cx, cy, cz, null);
+    }
+
+    /**
+     * Rebuilds the region and optionally applies frustum culling to skip chunks that are outside
+     * of the camera's view volume.
+     */
+    public void rebuildAround(int cx, int cy, int cz, Frustum frustum) {
         originX = cx - rx / 2;
         originY = java.lang.Math.max(0, java.lang.Math.min(Chunk.SY - ry, cy - ry / 2));
         originZ = cz - rz / 2;
-        for (int z = 0; z < rz; z++) {
-            for (int y = 0; y < ry; y++) {
-                for (int x = 0; x < rx; x++) {
-                    int wx = originX + x;
-                    int wy = originY + y;
+        int chunkCountX = (rx + Chunk.SX - 1) / Chunk.SX;
+        int chunkCountZ = (rz + Chunk.SZ - 1) / Chunk.SZ;
+
+        boolean[][] chunkVisible = null;
+        if (frustum != null) {
+            chunkVisible = new boolean[chunkCountX][chunkCountZ];
+            float minY = originY;
+            float maxY = originY + ry;
+            float pad = 0.5f;
+            for (int czLocal = 0; czLocal < chunkCountZ; czLocal++) {
+                int z0 = czLocal * Chunk.SZ;
+                int z1 = java.lang.Math.min(z0 + Chunk.SZ, rz);
+                float minZ = originZ + z0;
+                float maxZ = originZ + z1;
+                for (int cxLocal = 0; cxLocal < chunkCountX; cxLocal++) {
+                    int x0 = cxLocal * Chunk.SX;
+                    int x1 = java.lang.Math.min(x0 + Chunk.SX, rx);
+                    float minX = originX + x0;
+                    float maxX = originX + x1;
+                    chunkVisible[cxLocal][czLocal] = frustum.intersectsAABB(
+                            minX - pad, minY - pad, minZ - pad,
+                            maxX + pad, maxY + pad, maxZ + pad);
+                }
+            }
+        }
+
+        for (int czLocal = 0; czLocal < chunkCountZ; czLocal++) {
+            int z0 = czLocal * Chunk.SZ;
+            int z1 = java.lang.Math.min(z0 + Chunk.SZ, rz);
+            for (int cxLocal = 0; cxLocal < chunkCountX; cxLocal++) {
+                int x0 = cxLocal * Chunk.SX;
+                int x1 = java.lang.Math.min(x0 + Chunk.SX, rx);
+                boolean visible = chunkVisible == null || chunkVisible[cxLocal][czLocal];
+                if (!visible) {
+                    int width = x1 - x0;
+                    for (int z = z0; z < z1; z++) {
+                        int zOffset = z * rx * ry;
+                        for (int y = 0; y < ry; y++) {
+                            int start = x0 + y * rx + zOffset;
+                            Arrays.fill(buf, start, start + width, Blocks.AIR);
+                        }
+                    }
+                    continue;
+                }
+                for (int z = z0; z < z1; z++) {
                     int wz = originZ + z;
-                    int b = (wy < 0 || wy >= Chunk.SY) ? Blocks.AIR : cm.sample(wx, wy, wz);
-                    buf[ridx(x, y, z)] = b;
+                    for (int x = x0; x < x1; x++) {
+                        int wx = originX + x;
+                        for (int y = 0; y < ry; y++) {
+                            int wy = originY + y;
+                            int b = cm.sample(wx, wy, wz);
+                            buf[ridx(x, y, z)] = b;
+                        }
+                    }
                 }
             }
         }
