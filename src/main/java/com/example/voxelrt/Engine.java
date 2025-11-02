@@ -330,6 +330,8 @@ public class Engine {
             glClear(GL_COLOR_BUFFER_BIT);
             pollInput(dt);
 
+            chunkManager.update();
+
             int cx=(int)Math.floor(camera.position.x);
             int cy=(int)Math.floor(camera.position.y);
             int cz=(int)Math.floor(camera.position.z);
@@ -461,6 +463,9 @@ public class Engine {
         glDeleteProgram(quadProgram);
         glDeleteTextures(outputTex);
         glDeleteVertexArrays(vaoQuad);
+        if (chunkManager != null) {
+            chunkManager.shutdown();
+        }
         glfwDestroyWindow(window);
         glfwTerminate();
     }

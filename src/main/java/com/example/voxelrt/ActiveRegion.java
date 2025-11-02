@@ -122,61 +122,64 @@ public class ActiveRegion {
      * of the camera's view volume.
      */
     public void rebuildAround(int cx, int cy, int cz, Frustum frustum) {
+        cm.update();
         originX = cx - rx / 2;
         originY = java.lang.Math.max(0, java.lang.Math.min(Chunk.SY - ry, cy - ry / 2));
         originZ = cz - rz / 2;
-        int chunkCountX = (rx + Chunk.SX - 1) / Chunk.SX;
-        int chunkCountZ = (rz + Chunk.SZ - 1) / Chunk.SZ;
+        Arrays.fill(buf, Blocks.AIR);
 
-        boolean[][] chunkVisible = null;
-        if (frustum != null) {
-            chunkVisible = new boolean[chunkCountX][chunkCountZ];
-            float minY = originY;
-            float maxY = originY + ry;
-            float pad = 0.5f;
-            for (int czLocal = 0; czLocal < chunkCountZ; czLocal++) {
-                int z0 = czLocal * Chunk.SZ;
-                int z1 = java.lang.Math.min(z0 + Chunk.SZ, rz);
-                float minZ = originZ + z0;
-                float maxZ = originZ + z1;
-                for (int cxLocal = 0; cxLocal < chunkCountX; cxLocal++) {
-                    int x0 = cxLocal * Chunk.SX;
-                    int x1 = java.lang.Math.min(x0 + Chunk.SX, rx);
-                    float minX = originX + x0;
-                    float maxX = originX + x1;
-                    chunkVisible[cxLocal][czLocal] = frustum.intersectsAABB(
+        int minChunkX = java.lang.Math.floorDiv(originX, Chunk.SX);
+        int maxChunkX = java.lang.Math.floorDiv(originX + rx - 1, Chunk.SX);
+        int minChunkZ = java.lang.Math.floorDiv(originZ, Chunk.SZ);
+        int maxChunkZ = java.lang.Math.floorDiv(originZ + rz - 1, Chunk.SZ);
+        int yStart = originY;
+        int yEnd = originY + ry;
+        float pad = 0.5f;
+
+        for (int czWorld = minChunkZ; czWorld <= maxChunkZ; czWorld++) {
+            int chunkWorldZ0 = czWorld * Chunk.SZ;
+            int zStart = java.lang.Math.max(originZ, chunkWorldZ0);
+            int zEnd = java.lang.Math.min(originZ + rz, chunkWorldZ0 + Chunk.SZ);
+            if (zStart >= zEnd) continue;
+            for (int cxWorld = minChunkX; cxWorld <= maxChunkX; cxWorld++) {
+                int chunkWorldX0 = cxWorld * Chunk.SX;
+                int xStart = java.lang.Math.max(originX, chunkWorldX0);
+                int xEnd = java.lang.Math.min(originX + rx, chunkWorldX0 + Chunk.SX);
+                if (xStart >= xEnd) continue;
+
+                ChunkPos pos = new ChunkPos(cxWorld, czWorld);
+                cm.requestChunk(pos);
+
+                boolean visible = true;
+                if (frustum != null) {
+                    float minX = xStart;
+                    float maxX = xEnd;
+                    float minZ = zStart;
+                    float maxZ = zEnd;
+                    float minY = originY;
+                    float maxY = originY + ry;
+                    visible = frustum.intersectsAABB(
                             minX - pad, minY - pad, minZ - pad,
                             maxX + pad, maxY + pad, maxZ + pad);
                 }
-            }
-        }
-
-        for (int czLocal = 0; czLocal < chunkCountZ; czLocal++) {
-            int z0 = czLocal * Chunk.SZ;
-            int z1 = java.lang.Math.min(z0 + Chunk.SZ, rz);
-            for (int cxLocal = 0; cxLocal < chunkCountX; cxLocal++) {
-                int x0 = cxLocal * Chunk.SX;
-                int x1 = java.lang.Math.min(x0 + Chunk.SX, rx);
-                boolean visible = chunkVisible == null || chunkVisible[cxLocal][czLocal];
                 if (!visible) {
-                    int width = x1 - x0;
-                    for (int z = z0; z < z1; z++) {
-                        int zOffset = z * rx * ry;
-                        for (int y = 0; y < ry; y++) {
-                            int start = x0 + y * rx + zOffset;
-                            Arrays.fill(buf, start, start + width, Blocks.AIR);
-                        }
-                    }
                     continue;
                 }
-                for (int z = z0; z < z1; z++) {
-                    int wz = originZ + z;
-                    for (int x = x0; x < x1; x++) {
-                        int wx = originX + x;
-                        for (int y = 0; y < ry; y++) {
-                            int wy = originY + y;
-                            int b = cm.sample(wx, wy, wz);
-                            buf[ridx(x, y, z)] = b;
+
+                Chunk chunk = cm.getIfLoaded(pos);
+                if (chunk == null) {
+                    continue;
+                }
+
+                for (int wz = zStart; wz < zEnd; wz++) {
+                    int regionZ = wz - originZ;
+                    int chunkZLocal = wz - chunkWorldZ0;
+                    for (int wx = xStart; wx < xEnd; wx++) {
+                        int regionX = wx - originX;
+                        int chunkXLocal = wx - chunkWorldX0;
+                        for (int wy = yStart; wy < yEnd; wy++) {
+                            int regionY = wy - originY;
+                            buf[ridx(regionX, regionY, regionZ)] = chunk.get(chunkXLocal, wy, chunkZLocal);
                         }
                     }
                 }
