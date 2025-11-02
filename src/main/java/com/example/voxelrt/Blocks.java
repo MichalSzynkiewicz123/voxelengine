@@ -1,0 +1,1 @@
+package com.example.voxelrt; public final class Blocks{ public static final int AIR=0,GRASS=1,DIRT=2,STONE=3,SAND=4,SNOW=5; }
