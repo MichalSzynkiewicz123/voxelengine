@@ -241,8 +241,11 @@ public class Engine {
     private void loop(){
         double lastTime = glfwGetTime();
         double lastPrint = lastTime;
+        double fpsTimer = lastTime;
+        int fpsFrames = 0;
         while(!glfwWindowShouldClose(window)){
             double now=glfwGetTime(); float dt=(float)(now-lastTime); lastTime=now;
+            fpsFrames++;
 
             glClear(GL_COLOR_BUFFER_BIT);
             pollInput(dt);
@@ -332,6 +335,13 @@ public class Engine {
                 org.lwjgl.opengl.GL46C.glGetIntegeri_v(org.lwjgl.opengl.GL46C.GL_SHADER_STORAGE_BUFFER_BINDING, 0, who);
                 System.out.println("SSBO@0=" + who[0] + " expected=" + ssboVoxels + " gradient=" + debugGradient + " gpuWorld=" + useGPUWorld);
                 lastPrint = now;
+            }
+
+            if (now - fpsTimer >= 1.0) {
+                double fps = fpsFrames / (now - fpsTimer);
+                glfwSetWindowTitle(window, String.format("Voxel RT - %.1f FPS", fps));
+                fpsFrames = 0;
+                fpsTimer = now;
             }
 
             glfwSwapBuffers(window);
