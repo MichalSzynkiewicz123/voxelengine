@@ -24,6 +24,14 @@ public class Camera {
         if (pitchDeg < -89) pitchDeg = -89;
     }
 
+    public float yawDeg() {
+        return yawDeg;
+    }
+
+    public float pitchDeg() {
+        return pitchDeg;
+    }
+
     /**
      * Builds a look-at matrix using the current position and forward direction.
      */

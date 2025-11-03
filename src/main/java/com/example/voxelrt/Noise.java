@@ -33,12 +33,23 @@ public class Noise {
     }
 
     public double noise2D(double x, double y) {
-        int X = (int) java.lang.Math.floor(x) & 255, Y = (int) java.lang.Math.floor(y) & 255;
+        int X = (int) java.lang.Math.floor(x) & 255;
+        int Y = (int) java.lang.Math.floor(y) & 255;
         x -= java.lang.Math.floor(x);
         y -= java.lang.Math.floor(y);
-        double u = fade(x), v = fade(y);
-        int aa = perm[X + perm[Y]], ab = perm[X + perm[Y + 1]], ba = perm[X + 1 + perm[Y]], bb = perm[X + 1 + perm[Y + 1]];
-        return lerp(v, lerp(u, grad(aa, x, y), grad(ba, x - 1, y)),
+        double u = fade(x);
+        double v = fade(y);
+
+        int a = perm[X] + Y;
+        int b = perm[X + 1] + Y;
+
+        int aa = perm[a];
+        int ab = perm[a + 1];
+        int ba = perm[b];
+        int bb = perm[b + 1];
+
+        return lerp(v,
+                lerp(u, grad(aa, x, y), grad(ba, x - 1, y)),
                 lerp(u, grad(ab, x, y - 1), grad(bb, x - 1, y - 1)));
     }
 
