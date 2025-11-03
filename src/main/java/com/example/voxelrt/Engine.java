@@ -75,6 +75,9 @@ public class Engine {
     private boolean computeEnabled = true;
     private boolean useGPUWorld = false; // start with GPU fallback visible
     private float lodSwitchDistance = 72.0f;
+    private float lastRegionYaw = Float.NaN;
+    private float lastRegionPitch = Float.NaN;
+    private static final float REGION_REBUILD_ANGLE_THRESHOLD = 5f;
 
     /**
      * Starts the engine and tears down the native resources when the loop exits.
@@ -301,6 +304,8 @@ public class Engine {
                 (int) Math.floor(camera.position.y),
                 (int) Math.floor(camera.position.z),
                 frustum);
+        lastRegionYaw = camera.yawDeg();
+        lastRegionPitch = camera.pitchDeg();
         ssboVoxels = region.ssbo();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
         ssboVoxelsCoarse = region.ssboCoarse();
@@ -388,10 +393,14 @@ public class Engine {
             Matrix4f invProj = new Matrix4f(proj).invert();
             Matrix4f invView = new Matrix4f(view).invert();
 
+            float yawDiff = angularDifference(camera.yawDeg(), lastRegionYaw);
+            float pitchDiff = Float.isNaN(lastRegionPitch) ? Float.POSITIVE_INFINITY : (float) java.lang.Math.abs(camera.pitchDeg() - lastRegionPitch);
+            boolean rotatedSignificantly = yawDiff > REGION_REBUILD_ANGLE_THRESHOLD || pitchDiff > REGION_REBUILD_ANGLE_THRESHOLD;
             boolean needsRegionRebuild = loadedNewChunks ||
                     cx < region.originX + margin || cz < region.originZ + margin ||
                     cx > region.originX + region.rx - margin || cz > region.originZ + region.rz - margin ||
-                    cy < region.originY + margin || cy > region.originY + region.ry - margin;
+                    cy < region.originY + margin || cy > region.originY + region.ry - margin ||
+                    rotatedSignificantly;
 
             if (needsRegionRebuild) {
                 Frustum frustum = buildFrustum(proj, view);
@@ -400,6 +409,8 @@ public class Engine {
                 ssboVoxelsCoarse = region.ssboCoarse();
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+                lastRegionYaw = camera.yawDeg();
+                lastRegionPitch = camera.pitchDeg();
             }
 
             // Compute pass
@@ -496,6 +507,17 @@ public class Engine {
         vel.fma(wish.z, f).fma(wish.x, r).fma(wish.y, u);
         if (vel.lengthSquared() > 0) vel.normalize(speed);
         Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
+    }
+
+    private float angularDifference(float current, float previous) {
+        if (Float.isNaN(previous)) {
+            return Float.POSITIVE_INFINITY;
+        }
+        float diff = current - previous;
+        diff = diff % 360f;
+        if (diff > 180f) diff -= 360f;
+        if (diff < -180f) diff += 360f;
+        return (float) java.lang.Math.abs(diff);
     }
 
     private Frustum buildFrustum(Matrix4f proj, Matrix4f view) {
