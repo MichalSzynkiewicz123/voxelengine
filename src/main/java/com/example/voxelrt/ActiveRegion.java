@@ -18,15 +18,22 @@ public class ActiveRegion {
     public int originX, originY, originZ;
     private final int[] buf;
     private final int[] bufCoarse;
+    private final int[] bufFar;
     private int ssbo = 0;
     private int ssboCoarse = 0;
+    private int ssboFar = 0;
     private final ChunkManager cm;
     private final int lodScale = 2;
+    private final int lodScaleFar;
     private final int rxCoarse;
     private final int ryCoarse;
     private final int rzCoarse;
+    private final int rxFar;
+    private final int ryFar;
+    private final int rzFar;
     private final IntBuffer uploadIntBuffer;
     private final IntBuffer uploadIntBufferCoarse;
+    private final IntBuffer uploadIntBufferFar;
     private final IntBuffer singleIntView;
 
     public ActiveRegion(ChunkManager cm, int rx, int ry, int rz) {
@@ -38,9 +45,15 @@ public class ActiveRegion {
         this.rxCoarse = (rx + lodScale - 1) / lodScale;
         this.ryCoarse = (ry + lodScale - 1) / lodScale;
         this.rzCoarse = (rz + lodScale - 1) / lodScale;
+        this.lodScaleFar = lodScale * 2;
+        this.rxFar = (rx + lodScaleFar - 1) / lodScaleFar;
+        this.ryFar = (ry + lodScaleFar - 1) / lodScaleFar;
+        this.rzFar = (rz + lodScaleFar - 1) / lodScaleFar;
         this.bufCoarse = new int[rxCoarse * ryCoarse * rzCoarse];
+        this.bufFar = new int[rxFar * ryFar * rzFar];
         this.uploadIntBuffer = ByteBuffer.allocateDirect(this.buf.length * Integer.BYTES).order(ByteOrder.nativeOrder()).asIntBuffer();
         this.uploadIntBufferCoarse = ByteBuffer.allocateDirect(this.bufCoarse.length * Integer.BYTES).order(ByteOrder.nativeOrder()).asIntBuffer();
+        this.uploadIntBufferFar = ByteBuffer.allocateDirect(this.bufFar.length * Integer.BYTES).order(ByteOrder.nativeOrder()).asIntBuffer();
         this.singleIntView = ByteBuffer.allocateDirect(Integer.BYTES).order(ByteOrder.nativeOrder()).asIntBuffer();
     }
 
@@ -52,18 +65,22 @@ public class ActiveRegion {
         return x + y * rxCoarse + z * rxCoarse * ryCoarse;
     }
 
-    private int rebuildCoarseCell(int cx, int cy, int cz) {
-        int x0 = cx * lodScale;
-        int y0 = cy * lodScale;
-        int z0 = cz * lodScale;
+    private int ridxFar(int x, int y, int z) {
+        return x + y * rxFar + z * rxFar * ryFar;
+    }
+
+    private int rebuildLodCell(int scale, int cx, int cy, int cz) {
+        int x0 = cx * scale;
+        int y0 = cy * scale;
+        int z0 = cz * scale;
         int countGrass = 0;
         int countDirt = 0;
         int countStone = 0;
         int countSand = 0;
         int countSnow = 0;
-        for (int dz = 0; dz < lodScale && z0 + dz < rz; dz++) {
-            for (int dy = 0; dy < lodScale && y0 + dy < ry; dy++) {
-                for (int dx = 0; dx < lodScale && x0 + dx < rx; dx++) {
+        for (int dz = 0; dz < scale && z0 + dz < rz; dz++) {
+            for (int dy = 0; dy < scale && y0 + dy < ry; dy++) {
+                for (int dx = 0; dx < scale && x0 + dx < rx; dx++) {
                     int id = buf[ridx(x0 + dx, y0 + dy, z0 + dz)];
                     switch (id) {
                         case Blocks.GRASS -> countGrass++;
@@ -102,11 +119,29 @@ public class ActiveRegion {
         return bestCount == 0 ? Blocks.AIR : bestId;
     }
 
+    private int rebuildCoarseCell(int cx, int cy, int cz) {
+        return rebuildLodCell(lodScale, cx, cy, cz);
+    }
+
+    private int rebuildFarCell(int cx, int cy, int cz) {
+        return rebuildLodCell(lodScaleFar, cx, cy, cz);
+    }
+
     private void rebuildCoarseBuffer() {
         for (int cz = 0; cz < rzCoarse; cz++) {
             for (int cy = 0; cy < ryCoarse; cy++) {
                 for (int cx = 0; cx < rxCoarse; cx++) {
                     bufCoarse[ridxCoarse(cx, cy, cz)] = rebuildCoarseCell(cx, cy, cz);
+                }
+            }
+        }
+    }
+
+    private void rebuildFarBuffer() {
+        for (int cz = 0; cz < rzFar; cz++) {
+            for (int cy = 0; cy < ryFar; cy++) {
+                for (int cx = 0; cx < rxFar; cx++) {
+                    bufFar[ridxFar(cx, cy, cz)] = rebuildFarCell(cx, cy, cz);
                 }
             }
         }
@@ -192,6 +227,7 @@ public class ActiveRegion {
             }
         }
         rebuildCoarseBuffer();
+        rebuildFarBuffer();
         uploadAll();
     }
 
@@ -229,6 +265,22 @@ public class ActiveRegion {
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
             }
         }
+
+        int fx = x / lodScaleFar;
+        int fy = y / lodScaleFar;
+        int fz = z / lodScaleFar;
+        if (fx >= 0 && fy >= 0 && fz >= 0 && fx < rxFar && fy < ryFar && fz < rzFar) {
+            int farId = rebuildFarCell(fx, fy, fz);
+            bufFar[ridxFar(fx, fy, fz)] = farId;
+            if (ssboFar != 0) {
+                singleIntView.clear();
+                singleIntView.put(farId);
+                singleIntView.flip();
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboFar);
+                glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridxFar(fx, fy, fz) * 4L, singleIntView);
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            }
+        }
     }
 
     public int ssbo() {
@@ -237,6 +289,10 @@ public class ActiveRegion {
 
     public int ssboCoarse() {
         return ssboCoarse;
+    }
+
+    public int ssboFar() {
+        return ssboFar;
     }
 
     public int rxCoarse() {
@@ -251,8 +307,24 @@ public class ActiveRegion {
         return rzCoarse;
     }
 
+    public int rxFar() {
+        return rxFar;
+    }
+
+    public int ryFar() {
+        return ryFar;
+    }
+
+    public int rzFar() {
+        return rzFar;
+    }
+
     public int lodScale() {
         return lodScale;
+    }
+
+    public int lodScaleFar() {
+        return lodScaleFar;
     }
 
     private void uploadAll() {
@@ -272,6 +344,15 @@ public class ActiveRegion {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboCoarse);
         glBufferData(GL_SHADER_STORAGE_BUFFER, uploadIntBufferCoarse, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboCoarse);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+        if (ssboFar == 0) ssboFar = glGenBuffers();
+        uploadIntBufferFar.clear();
+        uploadIntBufferFar.put(bufFar);
+        uploadIntBufferFar.flip();
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboFar);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, uploadIntBufferFar, GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboFar);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
 }

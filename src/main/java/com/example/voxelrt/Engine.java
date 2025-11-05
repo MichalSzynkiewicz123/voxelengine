@@ -48,10 +48,14 @@ public class Engine {
     private int locComputeInvView = -1;
     private int locComputeWorldSize = -1;
     private int locComputeWorldSizeCoarse = -1;
+    private int locComputeWorldSizeFar = -1;
     private int locComputeRegionOrigin = -1;
     private int locComputeVoxelScale = -1;
     private int locComputeLodScale = -1;
+    private int locComputeLodScaleFar = -1;
     private int locComputeLodSwitchDistance = -1;
+    private int locComputeLodSwitchDistanceFar = -1;
+    private int locComputeLodTransitionBand = -1;
     private int locComputeCamPos = -1;
     private int locComputeSunDir = -1;
     private int locComputeResolution = -1;
@@ -66,6 +70,7 @@ public class Engine {
     private int outputTex, vaoQuad;
     private int ssboVoxels;
     private int ssboVoxelsCoarse;
+    private int ssboVoxelsFar;
 
     private Camera camera = new Camera(new Vector3f(64, 120, 64));
     private boolean mouseCaptured = true;
@@ -82,6 +87,10 @@ public class Engine {
     private boolean rasterEnabled = false;
     private boolean useGPUWorld = false; // start with GPU fallback visible
     private float lodSwitchDistance = 72.0f;
+    private float lodSwitchDistanceFar = 160.0f;
+    private float lodTransitionBand = 12.0f;
+    private boolean lodCameraInitialized = false;
+    private final Vector3f lastLodCameraPos = new Vector3f();
     private float lastRegionYaw = Float.NaN;
     private float lastRegionPitch = Float.NaN;
     private static final float REGION_REBUILD_ANGLE_THRESHOLD = 5f;
@@ -167,7 +176,12 @@ public class Engine {
                             (int) Math.floor(camera.position.y),
                             (int) Math.floor(camera.position.z),
                             frustum);
+                    ssboVoxels = region.ssbo();
+                    ssboVoxelsCoarse = region.ssboCoarse();
+                    ssboVoxelsFar = region.ssboFar();
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
                 }
                 if (key == GLFW_KEY_G) {
                     debugGradient = !debugGradient;
@@ -338,6 +352,8 @@ public class Engine {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
         ssboVoxelsCoarse = region.ssboCoarse();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+        ssboVoxelsFar = region.ssboFar();
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
         resetPrefetchBounds();
         lastPrefetchPosition.set(camera.position);
     }
@@ -399,10 +415,14 @@ public class Engine {
         locComputeInvView = glGetUniformLocation(computeProgram, "uInvView");
         locComputeWorldSize = glGetUniformLocation(computeProgram, "uWorldSize");
         locComputeWorldSizeCoarse = glGetUniformLocation(computeProgram, "uWorldSizeCoarse");
+        locComputeWorldSizeFar = glGetUniformLocation(computeProgram, "uWorldSizeFar");
         locComputeRegionOrigin = glGetUniformLocation(computeProgram, "uRegionOrigin");
         locComputeVoxelScale = glGetUniformLocation(computeProgram, "uVoxelScale");
         locComputeLodScale = glGetUniformLocation(computeProgram, "uLodScale");
+        locComputeLodScaleFar = glGetUniformLocation(computeProgram, "uLodScaleFar");
         locComputeLodSwitchDistance = glGetUniformLocation(computeProgram, "uLodSwitchDistance");
+        locComputeLodSwitchDistanceFar = glGetUniformLocation(computeProgram, "uLodSwitchDistanceFar");
+        locComputeLodTransitionBand = glGetUniformLocation(computeProgram, "uLodTransitionBand");
         locComputeCamPos = glGetUniformLocation(computeProgram, "uCamPos");
         locComputeSunDir = glGetUniformLocation(computeProgram, "uSunDir");
         locComputeResolution = glGetUniformLocation(computeProgram, "uResolution");
@@ -529,6 +549,7 @@ public class Engine {
 
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             pollInput(dt);
+            updateLodDistances(dt);
 
             chunkManager.update();
             boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
@@ -560,8 +581,10 @@ public class Engine {
                 region.rebuildAround(cx, cy, cz, frustum);
                 ssboVoxels = region.ssbo();
                 ssboVoxelsCoarse = region.ssboCoarse();
+                ssboVoxelsFar = region.ssboFar();
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
                 lastRegionYaw = camera.yawDeg();
                 lastRegionPitch = camera.pitchDeg();
                 resetPrefetchBounds();
@@ -599,11 +622,18 @@ public class Engine {
                 if (locComputeWorldSize >= 0) glUniform3i(locComputeWorldSize, region.rx, region.ry, region.rz);
                 if (locComputeWorldSizeCoarse >= 0)
                     glUniform3i(locComputeWorldSizeCoarse, region.rxCoarse(), region.ryCoarse(), region.rzCoarse());
+                if (locComputeWorldSizeFar >= 0)
+                    glUniform3i(locComputeWorldSizeFar, region.rxFar(), region.ryFar(), region.rzFar());
                 if (locComputeRegionOrigin >= 0)
                     glUniform3i(locComputeRegionOrigin, region.originX, region.originY, region.originZ);
                 if (locComputeVoxelScale >= 0) glUniform1f(locComputeVoxelScale, 1.0f);
                 if (locComputeLodScale >= 0) glUniform1f(locComputeLodScale, region.lodScale());
+                if (locComputeLodScaleFar >= 0) glUniform1f(locComputeLodScaleFar, region.lodScaleFar());
                 if (locComputeLodSwitchDistance >= 0) glUniform1f(locComputeLodSwitchDistance, lodSwitchDistance);
+                if (locComputeLodSwitchDistanceFar >= 0)
+                    glUniform1f(locComputeLodSwitchDistanceFar, lodSwitchDistanceFar);
+                if (locComputeLodTransitionBand >= 0)
+                    glUniform1f(locComputeLodTransitionBand, lodTransitionBand);
                 if (locComputeCamPos >= 0)
                     glUniform3f(locComputeCamPos, camera.position.x, camera.position.y, camera.position.z);
                 Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
@@ -614,6 +644,7 @@ public class Engine {
 
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
                 int gx = (rw + 15) / 16, gy = (rh + 15) / 16;
                 glDispatchCompute(gx, gy, 1);
                 glUseProgram(0);
@@ -642,7 +673,16 @@ public class Engine {
             if (now - lastPrint > 1.0) {
                 int[] who = new int[1];
                 org.lwjgl.opengl.GL46C.glGetIntegeri_v(org.lwjgl.opengl.GL46C.GL_SHADER_STORAGE_BUFFER_BINDING, 0, who);
-                System.out.println("SSBO@0=" + who[0] + " expected=" + ssboVoxels + " gradient=" + debugGradient + " gpuWorld=" + useGPUWorld);
+                int bound0 = who[0];
+                org.lwjgl.opengl.GL46C.glGetIntegeri_v(org.lwjgl.opengl.GL46C.GL_SHADER_STORAGE_BUFFER_BINDING, 1, who);
+                int bound1 = who[0];
+                org.lwjgl.opengl.GL46C.glGetIntegeri_v(org.lwjgl.opengl.GL46C.GL_SHADER_STORAGE_BUFFER_BINDING, 2, who);
+                int bound2 = who[0];
+                System.out.println("SSBO@0=" + bound0 + " @1=" + bound1 + " @2=" + bound2
+                        + " expected0=" + ssboVoxels
+                        + " expected1=" + ssboVoxelsCoarse
+                        + " expected2=" + ssboVoxelsFar
+                        + " gradient=" + debugGradient + " gpuWorld=" + useGPUWorld);
                 lastPrint = now;
             }
 
@@ -674,6 +714,46 @@ public class Engine {
         vel.fma(wish.z, f).fma(wish.x, r).fma(wish.y, u);
         if (vel.lengthSquared() > 0) vel.normalize(speed);
         Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
+    }
+
+    private void updateLodDistances(float dt) {
+        if (camera == null) {
+            return;
+        }
+        if (!lodCameraInitialized) {
+            lastLodCameraPos.set(camera.position);
+            lodCameraInitialized = true;
+            return;
+        }
+        if (dt <= 0f) {
+            return;
+        }
+
+        float dx = camera.position.x - lastLodCameraPos.x;
+        float dy = camera.position.y - lastLodCameraPos.y;
+        float dz = camera.position.z - lastLodCameraPos.z;
+        float distance = (float) java.lang.Math.sqrt(dx * dx + dy * dy + dz * dz);
+        float speed = distance / dt;
+
+        float desiredNear = 64.0f + speed * 1.5f;
+        float desiredFar = 140.0f + speed * 2.5f;
+        desiredNear = (float) java.lang.Math.max(48.0f, java.lang.Math.min(120.0f, desiredNear));
+        desiredFar = (float) java.lang.Math.max(120.0f, java.lang.Math.min(260.0f, desiredFar));
+
+        float alpha = 1.0f - (float) java.lang.Math.exp(-dt * 4.0f);
+        lodSwitchDistance = lerp(lodSwitchDistance, desiredNear, alpha);
+        lodSwitchDistanceFar = lerp(lodSwitchDistanceFar, desiredFar, alpha);
+
+        float minFar = lodSwitchDistance + lodTransitionBand * 2.0f + 8.0f;
+        if (lodSwitchDistanceFar < minFar) {
+            lodSwitchDistanceFar = minFar;
+        }
+
+        lastLodCameraPos.set(camera.position);
+    }
+
+    private float lerp(float a, float b, float t) {
+        return a + (b - a) * t;
     }
 
     private void updatePrefetch() {
