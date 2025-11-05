@@ -25,6 +25,9 @@ public class ActiveRegion {
     private final int rxCoarse;
     private final int ryCoarse;
     private final int rzCoarse;
+    private final IntBuffer uploadIntBuffer;
+    private final IntBuffer uploadIntBufferCoarse;
+    private final IntBuffer singleIntView;
 
     public ActiveRegion(ChunkManager cm, int rx, int ry, int rz) {
         this.cm = cm;
@@ -36,6 +39,9 @@ public class ActiveRegion {
         this.ryCoarse = (ry + lodScale - 1) / lodScale;
         this.rzCoarse = (rz + lodScale - 1) / lodScale;
         this.bufCoarse = new int[rxCoarse * ryCoarse * rzCoarse];
+        this.uploadIntBuffer = ByteBuffer.allocateDirect(this.buf.length * Integer.BYTES).order(ByteOrder.nativeOrder()).asIntBuffer();
+        this.uploadIntBufferCoarse = ByteBuffer.allocateDirect(this.bufCoarse.length * Integer.BYTES).order(ByteOrder.nativeOrder()).asIntBuffer();
+        this.singleIntView = ByteBuffer.allocateDirect(Integer.BYTES).order(ByteOrder.nativeOrder()).asIntBuffer();
     }
 
     private int ridx(int x, int y, int z) {
@@ -200,10 +206,11 @@ public class ActiveRegion {
         if (x < 0 || y < 0 || z < 0 || x >= rx || y >= ry || z >= rz) return;
         buf[ridx(x, y, z)] = b;
         if (ssbo != 0) {
-            IntBuffer ib = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder()).asIntBuffer();
-            ib.put(0, b);
+            singleIntView.clear();
+            singleIntView.put(b);
+            singleIntView.flip();
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-            glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridx(x, y, z) * 4L, ib);
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridx(x, y, z) * 4L, singleIntView);
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         }
 
@@ -214,10 +221,11 @@ public class ActiveRegion {
             int coarseId = rebuildCoarseCell(cx, cy, cz);
             bufCoarse[ridxCoarse(cx, cy, cz)] = coarseId;
             if (ssboCoarse != 0) {
-                IntBuffer cb = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder()).asIntBuffer();
-                cb.put(0, coarseId);
+                singleIntView.clear();
+                singleIntView.put(coarseId);
+                singleIntView.flip();
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboCoarse);
-                glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridxCoarse(cx, cy, cz) * 4L, cb);
+                glBufferSubData(GL_SHADER_STORAGE_BUFFER, (long) ridxCoarse(cx, cy, cz) * 4L, singleIntView);
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
             }
         }
@@ -249,18 +257,20 @@ public class ActiveRegion {
 
     private void uploadAll() {
         if (ssbo == 0) ssbo = glGenBuffers();
-        IntBuffer ib = ByteBuffer.allocateDirect(buf.length * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
-        ib.put(buf).flip();
+        uploadIntBuffer.clear();
+        uploadIntBuffer.put(buf);
+        uploadIntBuffer.flip();
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, ib, GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, uploadIntBuffer, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
         if (ssboCoarse == 0) ssboCoarse = glGenBuffers();
-        IntBuffer cb = ByteBuffer.allocateDirect(bufCoarse.length * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
-        cb.put(bufCoarse).flip();
+        uploadIntBufferCoarse.clear();
+        uploadIntBufferCoarse.put(bufCoarse);
+        uploadIntBufferCoarse.flip();
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboCoarse);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, cb, GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, uploadIntBufferCoarse, GL_DYNAMIC_DRAW);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboCoarse);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }

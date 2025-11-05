@@ -4,11 +4,19 @@ public class Chunk {
     public static final int SX = 16, SY = 256, SZ = 16;
     private static final int SECTION_HEIGHT = 16;
     private static final int SECTION_COUNT = (SY + SECTION_HEIGHT - 1) / SECTION_HEIGHT;
-    public final ChunkPos pos;
+    private ChunkPos pos;
     private final Section[] sections = new Section[SECTION_COUNT];
 
     public Chunk(ChunkPos p) {
         this.pos = p;
+    }
+
+    public ChunkPos pos() {
+        return pos;
+    }
+
+    void reset(ChunkPos newPos) {
+        this.pos = newPos;
     }
 
     private static byte encode(int blockId) {
@@ -96,9 +104,7 @@ public class Chunk {
     }
 
     public void fill(WorldGenerator gen) {
-        for (int i = 0; i < sections.length; i++) {
-            sections[i] = null;
-        }
+        clearSections();
         int wx0 = pos.cx() * SX, wz0 = pos.cz() * SZ;
         for (int z = 0; z < SZ; z++) {
             int wz = wz0 + z;
@@ -124,8 +130,27 @@ public class Chunk {
         }
     }
 
+    private void clearSections() {
+        for (int i = 0; i < sections.length; i++) {
+            Section section = sections[i];
+            if (section != null) {
+                section.clear();
+            }
+        }
+    }
+
+    void prepareForPool() {
+        clearSections();
+        this.pos = null;
+    }
+
     private static final class Section {
         final byte[] voxels = new byte[SX * SECTION_HEIGHT * SZ];
         int nonAir = 0;
+
+        void clear() {
+            nonAir = 0;
+            java.util.Arrays.fill(voxels, (byte) 0);
+        }
     }
 }

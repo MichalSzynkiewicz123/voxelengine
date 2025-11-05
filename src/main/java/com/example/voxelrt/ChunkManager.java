@@ -29,6 +29,7 @@ public class ChunkManager {
     private final ConcurrentHashMap<ChunkPos, CompletableFuture<Chunk>> pending = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<ChunkLoadResult> completed = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean integratedSinceLastPoll = new AtomicBoolean();
+    private final ConcurrentLinkedQueue<Chunk> chunkPool = new ConcurrentLinkedQueue<>();
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this.gen = g;
@@ -200,7 +201,11 @@ public class ChunkManager {
             if (!it.hasNext()) break;
             ChunkPos oldest = it.next();
             it.remove();
-            map.remove(oldest);
+            Chunk removed = map.remove(oldest);
+            if (removed != null) {
+                removed.prepareForPool();
+                chunkPool.offer(removed);
+            }
         }
     }
 
@@ -220,11 +225,16 @@ public class ChunkManager {
                 }
             });
             executor.submit(() -> {
+                Chunk chunk = null;
                 try {
-                    Chunk chunk = new Chunk(p);
+                    chunk = obtainChunk(p);
                     chunk.fill(gen);
                     future.complete(chunk);
                 } catch (Throwable t) {
+                    if (chunk != null) {
+                        chunk.prepareForPool();
+                        chunkPool.offer(chunk);
+                    }
                     future.completeExceptionally(t);
                 }
             });
@@ -232,8 +242,17 @@ public class ChunkManager {
         });
     }
 
+    private Chunk obtainChunk(ChunkPos pos) {
+        Chunk chunk = chunkPool.poll();
+        if (chunk != null) {
+            chunk.reset(pos);
+            return chunk;
+        }
+        return new Chunk(pos);
+    }
+
     private void applyEdits(Chunk chunk) {
-        ChunkPos pos = chunk.pos;
+        ChunkPos pos = chunk.pos();
         int wx0 = pos.cx() * Chunk.SX;
         int wz0 = pos.cz() * Chunk.SZ;
         synchronized (editLock) {
