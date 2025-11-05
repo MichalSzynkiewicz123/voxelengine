@@ -41,10 +41,31 @@ uniform float uTorchIntensity;
 uniform float uTorchRadius;// area radius
 uniform int   uTorchSoftSamples;
 
+// Secondary lighting & effects
+uniform int   uGIEnabled;
+uniform int   uGISampleCount;
+uniform float uGIMaxDistance;
+uniform float uGIIntensity;
+uniform int   uSecondaryTraceMaxSteps;
+
+uniform int   uReflectionEnabled;
+uniform float uReflectionMaxDistance;
+uniform float uReflectionIntensity;
+
+const int MAX_DYNAMIC_LIGHTS = 8;
+uniform int   uLightCount;
+uniform vec4  uLightPositions[MAX_DYNAMIC_LIGHTS]; // xyz=position, w=radius
+uniform vec4  uLightColors[MAX_DYNAMIC_LIGHTS];    // rgb=color,  a=intensity
+uniform int   uLightSoftSamples;
+
+uniform int   uShadowTraceMaxSteps;
+uniform int   uShadowOccupancyScale;
+
 // -------- constants / utils --------
 const float PI  = 3.14159265359;
 const float TAU = 6.28318530718;
 const float GOLDEN_ANGLE = 2.39996322973;
+const int   MAX_GI_SAMPLES = 32;
 
 float saturate(float x){ return clamp(x, 0.0, 1.0); }
 
@@ -191,16 +212,50 @@ bool traverseHitAny(vec3 startP, vec3 dir){
     vec3  dirStep = sign(rd);
     ivec3 stepI   = ivec3(dirStep);
     ivec3 off     = ivec3(stepI.x > 0 ? 1 : 0,
-    stepI.y > 0 ? 1 : 0,
-    stepI.z > 0 ? 1 : 0);
+                          stepI.y > 0 ? 1 : 0,
+                          stepI.z > 0 ? 1 : 0);
 
     vec3 nextBoundary = vec3(v + off);
     vec3 tMax3  = (nextBoundary - p) / rd;
     vec3 tDelta = abs(1.0 / rd);
 
-    for (int i=0; i<4096; ++i){
+    int maxSteps = max(uShadowTraceMaxSteps, 1);
+    int occupancyScale = max(uShadowOccupancyScale, 1);
+
+    for (int i=0; i<maxSteps; ++i){
         if (!inBounds(v)) return false;
         if (loadVoxel(v) != 0u) return true;
+
+        bool skipped = false;
+        if (occupancyScale > 1){
+            ivec3 coarse = ivec3(floor(vec3(v) / float(occupancyScale)));
+            if (inBoundsCoarse(coarse)){
+                if (loadVoxelCoarse(coarse) == 0u){
+                    for (int s=0; s<occupancyScale; ++s){
+                        if (tMax3.x < tMax3.y){
+                            if (tMax3.x < tMax3.z){
+                                v.x += stepI.x;
+                                tMax3.x += tDelta.x;
+                            } else {
+                                v.z += stepI.z;
+                                tMax3.z += tDelta.z;
+                            }
+                        } else {
+                            if (tMax3.y < tMax3.z){
+                                v.y += stepI.y;
+                                tMax3.y += tDelta.y;
+                            } else {
+                                v.z += stepI.z;
+                                tMax3.z += tDelta.z;
+                            }
+                        }
+                        if (!inBounds(v)) return false;
+                    }
+                    skipped = true;
+                }
+            }
+        }
+        if (skipped) continue;
 
         if (tMax3.x < tMax3.y){
             if (tMax3.x < tMax3.z){ v.x += stepI.x; tMax3.x += tDelta.x; }
@@ -208,6 +263,72 @@ bool traverseHitAny(vec3 startP, vec3 dir){
         } else {
             if (tMax3.y < tMax3.z){ v.y += stepI.y; tMax3.y += tDelta.y; }
             else { v.z += stepI.z; tMax3.z += tDelta.z; }
+        }
+    }
+    return false;
+}
+
+bool traceVoxel(vec3 origin, vec3 dir, float maxDistance, int maxSteps, out vec3 hitPos, out vec3 hitNormal, out uint hitId){
+    vec3 rd = normalize(dir);
+    vec3 p = origin;
+    ivec3 v = ivec3(floor(p));
+
+    vec3 dirStep = sign(rd);
+    ivec3 stepI = ivec3(dirStep);
+    ivec3 off = ivec3(stepI.x > 0 ? 1 : 0,
+                      stepI.y > 0 ? 1 : 0,
+                      stepI.z > 0 ? 1 : 0);
+
+    vec3 nextBoundary = vec3(v + off);
+    vec3 tMax3 = (nextBoundary - p) / rd;
+    vec3 tDelta = abs(1.0 / rd);
+    vec3 lastN = vec3(0.0);
+
+    hitPos = vec3(0.0);
+    hitNormal = vec3(0.0);
+    hitId = 0u;
+
+    float t = 0.0;
+    int steps = max(maxSteps, 1);
+    for (int i=0; i<steps; ++i){
+        if (maxDistance > 0.0 && t > maxDistance) break;
+
+        if (tMax3.x < tMax3.y){
+            if (tMax3.x < tMax3.z){
+                v.x += stepI.x;
+                lastN = vec3(-dirStep.x, 0.0, 0.0);
+                t = tMax3.x;
+                tMax3.x += tDelta.x;
+            } else {
+                v.z += stepI.z;
+                lastN = vec3(0.0, 0.0, -dirStep.z);
+                t = tMax3.z;
+                tMax3.z += tDelta.z;
+            }
+        } else {
+            if (tMax3.y < tMax3.z){
+                v.y += stepI.y;
+                lastN = vec3(0.0, -dirStep.y, 0.0);
+                t = tMax3.y;
+                tMax3.y += tDelta.y;
+            } else {
+                v.z += stepI.z;
+                lastN = vec3(0.0, 0.0, -dirStep.z);
+                t = tMax3.z;
+                tMax3.z += tDelta.z;
+            }
+        }
+
+        if (!inBounds(v)) break;
+        if (maxDistance > 0.0 && t > maxDistance) break;
+
+        uint id = loadVoxel(v);
+        if (id != 0u){
+            hitId = id;
+            hitNormal = normalize(lastN);
+            if (length(hitNormal) < 0.5) hitNormal = normalize(-rd);
+            hitPos = vec3(v) + vec3(0.5) + 0.5 * hitNormal;
+            return true;
         }
     }
     return false;
@@ -236,28 +357,44 @@ float sunVisibility(vec3 pHit, vec3 n){
     return vis / float(N);
 }
 
-// Torch visibility (soft via small emitter radius)
-float torchVisibilitySoft(vec3 pHit, vec3 Ldir, float dist){
-    int N = max(uTorchSoftSamples, 1);
-    if (uTorchRadius <= 1e-5 || N==1){
-        bool oc = traverseHitAny(pHit + Ldir*1e-3, Ldir);
+float sampleAreaLightVisibility(vec3 pHit, vec3 lightPos, float radius, int samples, vec3 fallbackDir){
+    int N = max(samples, 1);
+    vec3 dir = normalize(lightPos - pHit);
+    if (radius <= 1e-5 || N == 1){
+        vec3 rayDir = (radius <= 1e-5) ? dir : fallbackDir;
+        bool oc = traverseHitAny(pHit + rayDir*1e-3, rayDir);
         return oc ? 0.0 : 1.0;
     }
-    vec3 center = uTorchPos;
-    vec3 W = normalize(center - pHit);
+
+    vec3 center = lightPos;
+    vec3 W = (length(dir) > 1e-5) ? dir : fallbackDir;
+    if (length(W) < 1e-5) W = vec3(0.0, 1.0, 0.0);
+    W = normalize(W);
     vec3 T, B; makeONB(W, T, B);
 
     float sum = 0.0;
     for (int i=0; i<N; ++i){
         float u = (float(i)+0.5)/float(N);
         float ang = GOLDEN_ANGLE * float(i);
-        float r = uTorchRadius * sqrt(u);
-        vec3  target = center + r*(cos(ang)*T + sin(ang)*B);
-        vec3  L = normalize(target - pHit);
-        bool  oc = traverseHitAny(pHit + L*1e-3, L);
+        float r = radius * sqrt(u);
+        vec3 target = center + r*(cos(ang)*T + sin(ang)*B);
+        vec3 L = normalize(target - pHit);
+        bool oc = traverseHitAny(pHit + L*1e-3, L);
         sum += oc ? 0.0 : 1.0;
     }
     return sum / float(N);
+}
+
+vec3 evaluateAreaLight(vec3 albedo, vec3 pHit, vec3 n, vec3 lightPos, vec3 lightColor, float intensity, float radius, int samples){
+    vec3 toLight = lightPos - pHit;
+    float dist = length(toLight);
+    if (dist <= 1e-4) return vec3(0.0);
+    vec3 Ldir = toLight / dist;
+    float ndl = max(dot(n, Ldir), 0.0);
+    if (ndl <= 0.0) return vec3(0.0);
+    float vis = sampleAreaLightVisibility(pHit, lightPos, radius, samples, Ldir);
+    float atten = intensity / max(1.0, dist * dist);
+    return albedo * lightColor * ndl * vis * atten;
 }
 
 vec3 blockColor(uint id){
@@ -267,6 +404,15 @@ vec3 blockColor(uint id){
     if (id==4u) return vec3(0.82, 0.76, 0.52);// SAND
     if (id==5u) return vec3(0.95, 0.95, 0.97);// SNOW
     return vec3(0.0);
+}
+
+float blockReflectivity(uint id){
+    if (id==5u) return 0.25;// snow/ice
+    if (id==3u) return 0.12;// stone
+    if (id==4u) return 0.08;// sand
+    if (id==1u) return 0.06;// grass
+    if (id==2u) return 0.04;// dirt
+    return 0.05;
 }
 
 // Skylight: cosine-weighted hemisphere sample of envSky with occlusion
@@ -290,30 +436,93 @@ vec3 computeSkyIrradiance(vec3 pHit, vec3 n){
     return (W > 0.0) ? (sum / W) : vec3(0.0);
 }
 
-vec3 shadeVoxel(uint blockId, vec3 pHit, vec3 n){
-    vec3 albedo = blockColor(blockId);
+vec3 computeDirectLighting(vec3 albedo, vec3 pHit, vec3 n){
     vec3 Ls = normalize(uSunDir);
     float ndl = max(dot(n, Ls), 0.0);
     float sunVis = (ndl > 0.0) ? sunVisibility(pHit, n) : 0.0;
+    vec3 result = albedo * (ndl * sunVis);
 
-    float torchTerm = 0.0;
     if (uTorchEnabled != 0){
-        vec3 toTorch = uTorchPos - pHit;
-        float dist = length(toTorch);
-        if (dist > 1e-3){
-            vec3 Lt = toTorch / dist;
-            float ndl_t = max(dot(n, Lt), 0.0);
-            if (ndl_t > 0.0){
-                float visT = torchVisibilitySoft(pHit, Lt, dist);
-                float atten = 1.0 / max(1.0, dist*dist);
-                torchTerm = uTorchIntensity * ndl_t * visT * atten;
-            }
+        result += evaluateAreaLight(albedo, pHit, n, uTorchPos, vec3(1.0), uTorchIntensity, uTorchRadius, max(uTorchSoftSamples, 1));
+    }
+
+    int count = clamp(uLightCount, 0, MAX_DYNAMIC_LIGHTS);
+    int samples = max(uLightSoftSamples, 1);
+    for (int i=0; i<count; ++i){
+        vec4 lp = uLightPositions[i];
+        vec4 lc = uLightColors[i];
+        if (lc.a <= 0.0) continue;
+        result += evaluateAreaLight(albedo, pHit, n, lp.xyz, lc.rgb, lc.a, lp.w, samples);
+    }
+    return result;
+}
+
+vec3 computeIndirectGI(vec3 albedo, vec3 pHit, vec3 n){
+    if (uGIEnabled == 0) return vec3(0.0);
+    int samples = clamp(uGISampleCount, 0, MAX_GI_SAMPLES);
+    if (samples <= 0) return vec3(0.0);
+
+    vec3 T, B; makeONB(n, T, B);
+    vec3 sum = vec3(0.0);
+    float weightSum = 0.0;
+    int traceSteps = max(uSecondaryTraceMaxSteps, 1);
+
+    for (int i=0; i<samples; ++i){
+        float u = (float(i) + 0.5) / float(samples);
+        float v = fract(float(i) * 0.75487766);
+        float cosTheta = sqrt(max(0.0, 1.0 - u));
+        float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+        float phi = TAU * v;
+        vec3 hemi = vec3(cos(phi) * sinTheta, cosTheta, sin(phi) * sinTheta);
+        vec3 sampleDir = normalize(hemi.x * T + hemi.y * n + hemi.z * B);
+
+        vec3 start = pHit + n * 1e-3;
+        vec3 hitPos, hitNormal;
+        uint hitId;
+        if (traceVoxel(start, sampleDir, uGIMaxDistance, traceSteps, hitPos, hitNormal, hitId)){
+            vec3 bounceAlbedo = blockColor(hitId);
+            vec3 bounce = computeDirectLighting(bounceAlbedo, hitPos, hitNormal)
+                        + bounceAlbedo * computeSkyIrradiance(hitPos, hitNormal);
+            float weight = max(dot(n, sampleDir), 0.0);
+            sum += bounce * weight;
+            weightSum += weight;
+        } else {
+            float weight = max(dot(n, sampleDir), 0.0);
+            sum += envSky(sampleDir) * weight;
+            weightSum += weight;
         }
     }
 
-    vec3 directSun = albedo * (ndl * sunVis);
-    vec3 skyl      = albedo * computeSkyIrradiance(pHit, n);
-    return directSun + skyl + albedo * torchTerm;
+    if (weightSum > 0.0) sum /= weightSum;
+    return albedo * sum * uGIIntensity;
+}
+
+vec3 computeReflections(uint blockId, vec3 albedo, vec3 pHit, vec3 n, vec3 viewDir){
+    if (uReflectionEnabled == 0) return vec3(0.0);
+    float reflectivity = blockReflectivity(blockId) * uReflectionIntensity;
+    if (reflectivity <= 0.0) return vec3(0.0);
+
+    vec3 reflectDir = normalize(reflect(-viewDir, n));
+    vec3 start = pHit + reflectDir * 1e-3;
+    vec3 hitPos, hitNormal;
+    uint hitId;
+    bool hit = traceVoxel(start, reflectDir, uReflectionMaxDistance, uSecondaryTraceMaxSteps, hitPos, hitNormal, hitId);
+    vec3 reflectedColor = envSky(reflectDir);
+    if (hit){
+        vec3 hitAlbedo = blockColor(hitId);
+        reflectedColor = computeDirectLighting(hitAlbedo, hitPos, hitNormal)
+                       + hitAlbedo * computeSkyIrradiance(hitPos, hitNormal);
+    }
+    return reflectedColor * reflectivity;
+}
+
+vec3 shadeVoxel(uint blockId, vec3 pHit, vec3 n, vec3 viewDir){
+    vec3 albedo = blockColor(blockId);
+    vec3 direct = computeDirectLighting(albedo, pHit, n);
+    vec3 skyl = albedo * computeSkyIrradiance(pHit, n);
+    vec3 gi = computeIndirectGI(albedo, pHit, n);
+    vec3 refl = computeReflections(blockId, albedo, pHit, n, viewDir);
+    return direct + skyl + gi + refl;
 }
 
 // --------------------------- main ---------------------------
@@ -391,7 +600,7 @@ void main(){
                 if (farId != 0u){
                     vec3 n = any(notEqual(lastNFar, vec3(0.0))) ? normalize(lastNFar) : normalize(-rd);
                     vec3 pHit = cellCenter + n * (0.5 * lodScaleFar);
-                    color = shadeVoxel(farId, pHit, n);
+                    color = shadeVoxel(farId, pHit, n, rd);
                     blockId = farId;
                     hit = true;
                     continueTracing = false;
@@ -459,7 +668,7 @@ void main(){
                     if (coarseId != 0u){
                         vec3 n = any(notEqual(lastNNear, vec3(0.0))) ? normalize(lastNNear) : normalize(-rd);
                         vec3 pHit = cellCenter + n * (0.5 * lodScaleNear);
-                        color = shadeVoxel(coarseId, pHit, n);
+                        color = shadeVoxel(coarseId, pHit, n, rd);
                         blockId = coarseId;
                         hit = true;
                         continueTracing = false;
@@ -518,7 +727,7 @@ void main(){
                 if (blockId != 0u){
                     vec3 n = any(notEqual(lastN, vec3(0.0))) ? normalize(lastN) : normalize(-rd);
                     vec3 pHit = vec3(v) + vec3(0.5) + 0.5 * n;
-                    color = shadeVoxel(blockId, pHit, n);
+                    color = shadeVoxel(blockId, pHit, n, rd);
                     hit = true;
                     break;
                 }

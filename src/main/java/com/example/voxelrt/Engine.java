@@ -62,6 +62,20 @@ public class Engine {
     private int locComputeResolution = -1;
     private int locComputeDebugGradient = -1;
     private int locComputeUseGPUWorld = -1;
+    private int locComputeGIEnabled = -1;
+    private int locComputeGISampleCount = -1;
+    private int locComputeGIMaxDistance = -1;
+    private int locComputeGIIntensity = -1;
+    private int locComputeSecondaryTraceMaxSteps = -1;
+    private int locComputeReflectionEnabled = -1;
+    private int locComputeReflectionMaxDistance = -1;
+    private int locComputeReflectionIntensity = -1;
+    private int locComputeLightCount = -1;
+    private int locComputeLightSoftSamples = -1;
+    private int locComputeShadowTraceMaxSteps = -1;
+    private int locComputeShadowOccupancyScale = -1;
+    private final int[] locComputeLightPositions = new int[MAX_DYNAMIC_LIGHTS];
+    private final int[] locComputeLightColors = new int[MAX_DYNAMIC_LIGHTS];
     private int locQuadTex = -1;
     private int locQuadScreenSize = -1;
     private int locQuadPresentTest = -1;
@@ -99,11 +113,26 @@ public class Engine {
     private static final int PREFETCH_LOOKAHEAD_CHUNKS = 2;
     private static final float PREFETCH_DIRECTION_THRESHOLD = 0.15f;
     private static final int PREFETCH_MARGIN = 48;
+    private static final int MAX_DYNAMIC_LIGHTS = 4;
     private final Vector3f lastPrefetchPosition = new Vector3f();
     private int prefetchedEast = Integer.MIN_VALUE;
     private int prefetchedWest = Integer.MAX_VALUE;
     private int prefetchedSouth = Integer.MIN_VALUE;
     private int prefetchedNorth = Integer.MAX_VALUE;
+
+    private final DynamicLight[] dynamicLights = new DynamicLight[MAX_DYNAMIC_LIGHTS];
+    private int activeLightCount = 2;
+    private boolean enableGI = true;
+    private int giSampleCount = 8;
+    private float giMaxDistance = 28f;
+    private float giIntensity = 0.45f;
+    private boolean enableReflections = true;
+    private float reflectionMaxDistance = 96f;
+    private float reflectionIntensity = 0.6f;
+    private int secondaryTraceMaxSteps = 256;
+    private int shadowTraceMaxSteps = 256;
+    private int shadowOccupancyScale = 2;
+    private int dynamicLightSoftSamples = 6;
 
     /**
      * Starts the engine and tears down the native resources when the loop exits.
@@ -204,6 +233,18 @@ public class Engine {
                 if (key == GLFW_KEY_H) {
                     useGPUWorld = !useGPUWorld;
                     System.out.println("[DEBUG] useGPUWorld=" + useGPUWorld);
+                }
+                if (key == GLFW_KEY_F6) {
+                    enableGI = !enableGI;
+                    System.out.println("[DEBUG] giEnabled=" + enableGI);
+                }
+                if (key == GLFW_KEY_F7) {
+                    enableReflections = !enableReflections;
+                    System.out.println("[DEBUG] reflections=" + enableReflections);
+                }
+                if (key == GLFW_KEY_F8) {
+                    activeLightCount = (activeLightCount == 0) ? java.lang.Math.min(2, dynamicLights.length) : 0;
+                    System.out.println("[DEBUG] dynamicLights=" + activeLightCount);
                 }
                 if (key == GLFW_KEY_KP_ADD || key == GLFW_KEY_EQUAL) {
                     resolutionScale = Math.min(2.0f, resolutionScale + 0.1f);
@@ -324,6 +365,7 @@ public class Engine {
         cacheQuadUniformLocations();
         cacheMeshUniformLocations();
         chunkBatcher = new ChunkBatcher();
+        initDynamicLights();
 
         vaoQuad = glGenVertexArrays();
         createOutputTexture();
@@ -431,6 +473,22 @@ public class Engine {
         locComputeResolution = glGetUniformLocation(computeProgram, "uResolution");
         locComputeDebugGradient = glGetUniformLocation(computeProgram, "uDebugGradient");
         locComputeUseGPUWorld = glGetUniformLocation(computeProgram, "uUseGPUWorld");
+        locComputeGIEnabled = glGetUniformLocation(computeProgram, "uGIEnabled");
+        locComputeGISampleCount = glGetUniformLocation(computeProgram, "uGISampleCount");
+        locComputeGIMaxDistance = glGetUniformLocation(computeProgram, "uGIMaxDistance");
+        locComputeGIIntensity = glGetUniformLocation(computeProgram, "uGIIntensity");
+        locComputeSecondaryTraceMaxSteps = glGetUniformLocation(computeProgram, "uSecondaryTraceMaxSteps");
+        locComputeReflectionEnabled = glGetUniformLocation(computeProgram, "uReflectionEnabled");
+        locComputeReflectionMaxDistance = glGetUniformLocation(computeProgram, "uReflectionMaxDistance");
+        locComputeReflectionIntensity = glGetUniformLocation(computeProgram, "uReflectionIntensity");
+        locComputeLightCount = glGetUniformLocation(computeProgram, "uLightCount");
+        locComputeLightSoftSamples = glGetUniformLocation(computeProgram, "uLightSoftSamples");
+        locComputeShadowTraceMaxSteps = glGetUniformLocation(computeProgram, "uShadowTraceMaxSteps");
+        locComputeShadowOccupancyScale = glGetUniformLocation(computeProgram, "uShadowOccupancyScale");
+        for (int i = 0; i < MAX_DYNAMIC_LIGHTS; i++) {
+            locComputeLightPositions[i] = glGetUniformLocation(computeProgram, "uLightPositions[" + i + "]");
+            locComputeLightColors[i] = glGetUniformLocation(computeProgram, "uLightColors[" + i + "]");
+        }
     }
 
     private void cacheQuadUniformLocations() {
@@ -443,6 +501,84 @@ public class Engine {
         locMeshProj = glGetUniformLocation(meshProgram, "uProj");
         locMeshView = glGetUniformLocation(meshProgram, "uView");
         locMeshSunDir = glGetUniformLocation(meshProgram, "uSunDir");
+    }
+
+    private void initDynamicLights() {
+        for (int i = 0; i < dynamicLights.length; i++) {
+            dynamicLights[i] = new DynamicLight();
+        }
+        if (dynamicLights.length > 0 && dynamicLights[0] != null) {
+            dynamicLights[0].color.set(1.0f, 0.72f, 0.45f);
+            dynamicLights[0].intensity = 20f;
+            dynamicLights[0].radius = 0.35f;
+            dynamicLights[0].position.set(camera.position).add(0f, 2.5f, 0f);
+        }
+        if (dynamicLights.length > 1 && dynamicLights[1] != null) {
+            dynamicLights[1].color.set(0.4f, 0.65f, 1.0f);
+            dynamicLights[1].intensity = 16f;
+            dynamicLights[1].radius = 0.45f;
+            dynamicLights[1].position.set(camera.position).add(0f, 1.5f, 0f);
+        }
+        activeLightCount = java.lang.Math.min(activeLightCount, dynamicLights.length);
+    }
+
+    private void updateDynamicLights(double now) {
+        if (dynamicLights.length == 0 || dynamicLights[0] == null) {
+            return;
+        }
+        float time = (float) now;
+        if (activeLightCount > 0 && dynamicLights[0] != null) {
+            dynamicLights[0].position.set(
+                    camera.position.x + (float) java.lang.Math.cos(time * 0.65f) * 4.0f,
+                    camera.position.y + 2.5f,
+                    camera.position.z + (float) java.lang.Math.sin(time * 0.65f) * 4.0f
+            );
+        }
+        if (activeLightCount > 1 && dynamicLights[1] != null) {
+            dynamicLights[1].position.set(
+                    camera.position.x + (float) java.lang.Math.cos(time * 0.85f + java.lang.Math.PI * 0.5f) * 3.2f,
+                    camera.position.y + 1.5f + (float) java.lang.Math.sin(time * 0.45f) * 0.75f,
+                    camera.position.z + (float) java.lang.Math.sin(time * 0.85f + java.lang.Math.PI * 0.5f) * 3.2f
+            );
+        }
+    }
+
+    private void uploadDynamicLights() {
+        int count = java.lang.Math.min(activeLightCount, dynamicLights.length);
+        if (locComputeLightCount >= 0) {
+            glUniform1i(locComputeLightCount, count);
+        }
+        if (locComputeLightSoftSamples >= 0) {
+            glUniform1i(locComputeLightSoftSamples, dynamicLightSoftSamples);
+        }
+        for (int i = 0; i < MAX_DYNAMIC_LIGHTS; i++) {
+            float px = 0f, py = 0f, pz = 0f, radius = 0f;
+            float r = 0f, g = 0f, b = 0f, intensity = 0f;
+            if (i < count && dynamicLights[i] != null) {
+                DynamicLight light = dynamicLights[i];
+                px = light.position.x;
+                py = light.position.y;
+                pz = light.position.z;
+                radius = light.radius;
+                r = light.color.x;
+                g = light.color.y;
+                b = light.color.z;
+                intensity = light.intensity;
+            }
+            if (locComputeLightPositions[i] >= 0) {
+                glUniform4f(locComputeLightPositions[i], px, py, pz, radius);
+            }
+            if (locComputeLightColors[i] >= 0) {
+                glUniform4f(locComputeLightColors[i], r, g, b, intensity);
+            }
+        }
+    }
+
+    private static final class DynamicLight {
+        final Vector3f position = new Vector3f();
+        final Vector3f color = new Vector3f(1f, 1f, 1f);
+        float intensity = 0f;
+        float radius = 0.25f;
     }
 
     private void rebuildChunkMeshes(java.util.List<Chunk> chunks) {
@@ -602,6 +738,8 @@ public class Engine {
 
             java.util.List<Chunk> visibleChunks = filterVisibleChunks(loadedChunks, frustum);
 
+            updateDynamicLights(now);
+
             // Compute pass
             if (!rasterEnabled && computeEnabled) {
                 glUseProgram(computeProgram);
@@ -620,6 +758,24 @@ public class Engine {
                 if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 30.0f);
                 if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.15f);
                 if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 8);
+
+                if (locComputeGIEnabled >= 0) glUniform1i(locComputeGIEnabled, enableGI ? 1 : 0);
+                if (locComputeGISampleCount >= 0) glUniform1i(locComputeGISampleCount, giSampleCount);
+                if (locComputeGIMaxDistance >= 0) glUniform1f(locComputeGIMaxDistance, giMaxDistance);
+                if (locComputeGIIntensity >= 0) glUniform1f(locComputeGIIntensity, giIntensity);
+                if (locComputeSecondaryTraceMaxSteps >= 0)
+                    glUniform1i(locComputeSecondaryTraceMaxSteps, secondaryTraceMaxSteps);
+                if (locComputeReflectionEnabled >= 0)
+                    glUniform1i(locComputeReflectionEnabled, enableReflections ? 1 : 0);
+                if (locComputeReflectionMaxDistance >= 0)
+                    glUniform1f(locComputeReflectionMaxDistance, reflectionMaxDistance);
+                if (locComputeReflectionIntensity >= 0)
+                    glUniform1f(locComputeReflectionIntensity, reflectionIntensity);
+                if (locComputeShadowTraceMaxSteps >= 0)
+                    glUniform1i(locComputeShadowTraceMaxSteps, shadowTraceMaxSteps);
+                if (locComputeShadowOccupancyScale >= 0)
+                    glUniform1i(locComputeShadowOccupancyScale, shadowOccupancyScale);
+                uploadDynamicLights();
 
                 glBindImageTexture(0, outputTex, 0, false, 0, GL_WRITE_ONLY, GL_RGBA8);
 
