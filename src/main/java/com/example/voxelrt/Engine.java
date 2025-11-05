@@ -1,5 +1,6 @@
 package com.example.voxelrt;
 
+import com.example.voxelrt.mesh.ChunkBatcher;
 import com.example.voxelrt.mesh.ChunkMesh;
 import com.example.voxelrt.mesh.MeshBuilder;
 
@@ -71,6 +72,7 @@ public class Engine {
     private int ssboVoxels;
     private int ssboVoxelsCoarse;
     private int ssboVoxelsFar;
+    private ChunkBatcher chunkBatcher;
 
     private Camera camera = new Camera(new Vector3f(64, 120, 64));
     private boolean mouseCaptured = true;
@@ -321,6 +323,7 @@ public class Engine {
         cacheComputeUniformLocations();
         cacheQuadUniformLocations();
         cacheMeshUniformLocations();
+        chunkBatcher = new ChunkBatcher();
 
         vaoQuad = glGenVertexArrays();
         createOutputTexture();
@@ -453,8 +456,8 @@ public class Engine {
             MeshBuilder.MeshData data = MeshBuilder.build(chunk, chunkManager);
             ChunkMesh old = chunk.mesh();
             ChunkMesh nextMesh = null;
-            if (data.vertexCount() > 0) {
-                nextMesh = ChunkMesh.create(data.vertices(), data.vertexCount());
+            if (data.instanceCount() > 0) {
+                nextMesh = ChunkMesh.create(data.instanceData(), data.instanceCount());
             }
             if (old != null) {
                 old.destroy();
@@ -475,11 +478,15 @@ public class Engine {
         if (locMeshSunDir >= 0) {
             glUniform3f(locMeshSunDir, sunDir.x, sunDir.y, sunDir.z);
         }
+        java.util.ArrayList<ChunkMesh> drawList = new java.util.ArrayList<>(chunks.size());
         for (Chunk chunk : chunks) {
             ChunkMesh mesh = chunk.mesh();
-            if (mesh != null && mesh.vertexCount() > 0) {
-                mesh.draw();
+            if (mesh != null && mesh.instanceCount() > 0) {
+                drawList.add(mesh);
             }
+        }
+        if (!drawList.isEmpty() && chunkBatcher != null) {
+            chunkBatcher.drawBatched(drawList);
         }
         glUseProgram(0);
     }
@@ -900,6 +907,9 @@ public class Engine {
         glDeleteProgram(meshProgram);
         glDeleteTextures(outputTex);
         glDeleteVertexArrays(vaoQuad);
+        if (chunkBatcher != null) {
+            chunkBatcher.close();
+        }
         if (chunkManager != null) {
             for (Chunk chunk : chunkManager.snapshotLoadedChunks()) {
                 chunk.releaseMesh();
