@@ -16,10 +16,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * be generated on demand via the {@link WorldGenerator}.
  */
 public class ChunkManager {
+    public static final int MIN_CACHE_SIZE = 64;
+    public static final int DEFAULT_CACHE_SIZE = 256;
     private final WorldGenerator gen;
     private final Map<ChunkPos, Chunk> map = new HashMap<>();
     private final LinkedHashMap<ChunkPos, Chunk> lru = new LinkedHashMap<>(64, 0.75f, true);
-    private final int maxLoaded;
+    private volatile int maxLoaded;
     private final Map<Long, Integer> edits = new HashMap<>();
     private final Object lock = new Object();
     private final Object editLock = new Object();
@@ -30,7 +32,7 @@ public class ChunkManager {
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this.gen = g;
-        this.maxLoaded = java.lang.Math.max(64, maxLoaded);
+        this.maxLoaded = sanitizeMaxLoaded(maxLoaded);
         int threads = java.lang.Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
         AtomicInteger ctr = new AtomicInteger();
         ThreadFactory factory = r -> {
@@ -177,14 +179,33 @@ public class ChunkManager {
         executor.shutdownNow();
     }
 
+    public void setMaxLoaded(int maxLoaded) {
+        int sanitized = sanitizeMaxLoaded(maxLoaded);
+        synchronized (lock) {
+            if (sanitized != this.maxLoaded) {
+                this.maxLoaded = sanitized;
+                trimToMaxLocked();
+            }
+        }
+    }
+
+    public int getMaxLoaded() {
+        return maxLoaded;
+    }
+
     private void trimToMaxLocked() {
-        while (lru.size() > maxLoaded) {
+        int limit = this.maxLoaded;
+        while (lru.size() > limit) {
             Iterator<ChunkPos> it = lru.keySet().iterator();
             if (!it.hasNext()) break;
             ChunkPos oldest = it.next();
             it.remove();
             map.remove(oldest);
         }
+    }
+
+    private static int sanitizeMaxLoaded(int maxLoaded) {
+        return java.lang.Math.max(MIN_CACHE_SIZE, maxLoaded);
     }
 
     private CompletableFuture<Chunk> ensureTask(ChunkPos pos) {
