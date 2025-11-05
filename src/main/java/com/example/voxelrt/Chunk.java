@@ -6,7 +6,7 @@ public class Chunk {
     private static final int Y_BITS = Integer.SIZE - Integer.numberOfLeadingZeros(SY - 1);
     private static final int Z_BITS = Integer.SIZE - Integer.numberOfLeadingZeros(SZ - 1);
     public final ChunkPos pos;
-    private final int[] vox = new int[SX * SY * SZ];
+    private final byte[] vox = new byte[SX * SY * SZ];
 
     public Chunk(ChunkPos p) {
         this.pos = p;
@@ -33,14 +33,21 @@ public class Chunk {
         return morton;
     }
 
+    private static byte encode(int blockId) {
+        if ((blockId & 0xFFFFFF00) != 0) {
+            throw new IllegalArgumentException("Block ID out of range for byte storage: " + blockId);
+        }
+        return (byte) blockId;
+    }
+
     public int get(int x, int y, int z) {
         if ((x | y | z) < 0 || x >= SX || y >= SY || z >= SZ) return Blocks.AIR;
-        return vox[idx(x, y, z)];
+        return vox[idx(x, y, z)] & 0xFF;
     }
 
     public void set(int x, int y, int z, int b) {
         if ((x | y | z) < 0 || x >= SX || y >= SY || z >= SZ) return;
-        vox[idx(x, y, z)] = b;
+        vox[idx(x, y, z)] = encode(b);
     }
 
     public void fill(WorldGenerator gen) {
@@ -63,11 +70,11 @@ public class Chunk {
                     } else {
                         block = column.lowerBlock();
                     }
-                    vox[idx(x, y, z)] = block;
+                    vox[idx(x, y, z)] = encode(block);
                 }
 
                 for (int y = Math.max(topY + 1, 0); y < SY; y++) {
-                    vox[idx(x, y, z)] = Blocks.AIR;
+                    vox[idx(x, y, z)] = 0;
                 }
             }
         }
