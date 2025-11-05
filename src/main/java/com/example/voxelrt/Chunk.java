@@ -45,10 +45,31 @@ public class Chunk {
 
     public void fill(WorldGenerator gen) {
         int wx0 = pos.cx() * SX, wz0 = pos.cz() * SZ;
-        for (int z = 0; z < SZ; z++)
+        for (int z = 0; z < SZ; z++) {
+            int wz = wz0 + z;
             for (int x = 0; x < SX; x++) {
-                int wx = wx0 + x, wz = wz0 + z;
-                for (int y = 0; y < SY; y++) vox[idx(x, y, z)] = gen.sampleBlock(wx, y, wz);
+                int wx = wx0 + x;
+                WorldGenerator.Column column = gen.sampleColumn(wx, wz);
+                int ground = column.groundHeight();
+                int fillerStart = Math.max(0, ground - 3);
+                int topY = Math.min(ground, SY - 1);
+
+                for (int y = 0; y <= topY; y++) {
+                    int block;
+                    if (ground >= 0 && y == ground) {
+                        block = column.surfaceBlock();
+                    } else if (y >= fillerStart) {
+                        block = column.fillerBlock();
+                    } else {
+                        block = column.lowerBlock();
+                    }
+                    vox[idx(x, y, z)] = block;
+                }
+
+                for (int y = Math.max(topY + 1, 0); y < SY; y++) {
+                    vox[idx(x, y, z)] = Blocks.AIR;
+                }
             }
+        }
     }
 }
