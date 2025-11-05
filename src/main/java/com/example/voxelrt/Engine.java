@@ -464,6 +464,39 @@ public class Engine {
         glUseProgram(0);
     }
 
+    private java.util.List<Chunk> filterVisibleChunks(java.util.List<Chunk> chunks, Frustum frustum) {
+        if (chunks.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        java.util.ArrayList<Chunk> visible = new java.util.ArrayList<>(chunks.size());
+        for (Chunk chunk : chunks) {
+            if (chunkVisible(chunk, frustum)) {
+                visible.add(chunk);
+            }
+        }
+        if (visible.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        return visible;
+    }
+
+    private boolean chunkVisible(Chunk chunk, Frustum frustum) {
+        if (frustum == null) {
+            return true;
+        }
+        ChunkPos pos = chunk.pos();
+        if (pos == null) {
+            return false;
+        }
+        float minX = pos.cx() * Chunk.SX;
+        float minZ = pos.cz() * Chunk.SZ;
+        float minY = 0f;
+        float maxX = minX + Chunk.SX;
+        float maxZ = minZ + Chunk.SZ;
+        float maxY = Chunk.SY;
+        return frustum.intersectsAABB(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
     private void createOutputTexture() {
         if (outputTex != 0) glDeleteTextures(outputTex);
         int rw = Math.max(1, (int) (width * resolutionScale));
@@ -512,6 +545,7 @@ public class Engine {
             Matrix4f view = camera.viewMatrix();
             Matrix4f invProj = new Matrix4f(proj).invert();
             Matrix4f invView = new Matrix4f(view).invert();
+            Frustum frustum = buildFrustum(proj, view);
 
             float yawDiff = angularDifference(camera.yawDeg(), lastRegionYaw);
             float pitchDiff = Float.isNaN(lastRegionPitch) ? Float.POSITIVE_INFINITY : (float) java.lang.Math.abs(camera.pitchDeg() - lastRegionPitch);
@@ -523,7 +557,6 @@ public class Engine {
                     rotatedSignificantly;
 
             if (needsRegionRebuild) {
-                Frustum frustum = buildFrustum(proj, view);
                 region.rebuildAround(cx, cy, cz, frustum);
                 ssboVoxels = region.ssbo();
                 ssboVoxelsCoarse = region.ssboCoarse();
@@ -536,6 +569,8 @@ public class Engine {
             }
 
             updatePrefetch();
+
+            java.util.List<Chunk> visibleChunks = filterVisibleChunks(loadedChunks, frustum);
 
             // Compute pass
             if (!rasterEnabled && computeEnabled) {
@@ -587,7 +622,7 @@ public class Engine {
 
             // Present
             if (rasterEnabled) {
-                renderChunkMeshes(proj, view, loadedChunks);
+                renderChunkMeshes(proj, view, visibleChunks);
             } else {
                 glDisable(GL_DEPTH_TEST);
                 glDisable(GL_CULL_FACE);
