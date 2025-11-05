@@ -13,6 +13,11 @@
     <joml.version>1.10.5</joml.version>
   </properties>
   <dependencies>
+    <dependency>
+      <groupId>org.jmonkeyengine</groupId>
+      <artifactId>jbullet</artifactId>
+      <version>3.6.1-stable</version>
+    </dependency>
     <dependency><groupId>org.lwjgl</groupId><artifactId>lwjgl</artifactId><version>${lwjgl.version}</version></dependency>
     <dependency><groupId>org.lwjgl</groupId><artifactId>lwjgl-glfw</artifactId><version>${lwjgl.version}</version></dependency>
     <dependency><groupId>org.lwjgl</groupId><artifactId>lwjgl-opengl</artifactId><version>${lwjgl.version}</version></dependency>
