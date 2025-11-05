@@ -78,6 +78,14 @@ public class Engine {
     private float lastRegionYaw = Float.NaN;
     private float lastRegionPitch = Float.NaN;
     private static final float REGION_REBUILD_ANGLE_THRESHOLD = 5f;
+    private static final int PREFETCH_LOOKAHEAD_CHUNKS = 2;
+    private static final float PREFETCH_DIRECTION_THRESHOLD = 0.15f;
+    private static final int PREFETCH_MARGIN = 48;
+    private final Vector3f lastPrefetchPosition = new Vector3f();
+    private int prefetchedEast = Integer.MIN_VALUE;
+    private int prefetchedWest = Integer.MAX_VALUE;
+    private int prefetchedSouth = Integer.MIN_VALUE;
+    private int prefetchedNorth = Integer.MAX_VALUE;
 
     /**
      * Starts the engine and tears down the native resources when the loop exits.
@@ -312,6 +320,8 @@ public class Engine {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
         ssboVoxelsCoarse = region.ssboCoarse();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+        resetPrefetchBounds();
+        lastPrefetchPosition.set(camera.position);
     }
 
     private int determineChunkCacheSize() {
@@ -453,7 +463,11 @@ public class Engine {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
                 lastRegionYaw = camera.yawDeg();
                 lastRegionPitch = camera.pitchDeg();
+                resetPrefetchBounds();
+                lastPrefetchPosition.set(camera.position);
             }
+
+            updatePrefetch();
 
             // Compute pass
             if (computeEnabled) {
@@ -549,6 +563,117 @@ public class Engine {
         vel.fma(wish.z, f).fma(wish.x, r).fma(wish.y, u);
         if (vel.lengthSquared() > 0) vel.normalize(speed);
         Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
+    }
+
+    private void updatePrefetch() {
+        if (region == null || chunkManager == null) {
+            return;
+        }
+        Vector3f position = camera.position;
+        float dx = position.x - lastPrefetchPosition.x;
+        float dz = position.z - lastPrefetchPosition.z;
+        float horizontalLenSq = dx * dx + dz * dz;
+        if (horizontalLenSq < 1e-4f) {
+            lastPrefetchPosition.set(position);
+            return;
+        }
+
+        float invLen = (float) (1.0 / java.lang.Math.sqrt(horizontalLenSq));
+        float dirX = dx * invLen;
+        float dirZ = dz * invLen;
+
+        float localX = position.x - region.originX;
+        float localZ = position.z - region.originZ;
+        int marginX = java.lang.Math.min(PREFETCH_MARGIN, region.rx / 2);
+        int marginZ = java.lang.Math.min(PREFETCH_MARGIN, region.rz / 2);
+
+        if (dirX > PREFETCH_DIRECTION_THRESHOLD && localX > region.rx - marginX) {
+            prefetchEast();
+        } else if (dirX < -PREFETCH_DIRECTION_THRESHOLD && localX < marginX) {
+            prefetchWest();
+        }
+
+        if (dirZ > PREFETCH_DIRECTION_THRESHOLD && localZ > region.rz - marginZ) {
+            prefetchSouth();
+        } else if (dirZ < -PREFETCH_DIRECTION_THRESHOLD && localZ < marginZ) {
+            prefetchNorth();
+        }
+
+        lastPrefetchPosition.set(position);
+    }
+
+    private void resetPrefetchBounds() {
+        if (region == null) {
+            return;
+        }
+        prefetchedEast = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX);
+        prefetchedWest = java.lang.Math.floorDiv(region.originX, Chunk.SX);
+        prefetchedSouth = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ);
+        prefetchedNorth = java.lang.Math.floorDiv(region.originZ, Chunk.SZ);
+    }
+
+    private void prefetchEast() {
+        int minChunkZ = java.lang.Math.floorDiv(region.originZ, Chunk.SZ);
+        int maxChunkZ = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ);
+        int desired = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX) + PREFETCH_LOOKAHEAD_CHUNKS;
+        if (prefetchedEast >= desired) {
+            return;
+        }
+        for (int chunkX = prefetchedEast + 1; chunkX <= desired; chunkX++) {
+            requestColumn(chunkX, minChunkZ, maxChunkZ);
+        }
+        prefetchedEast = desired;
+    }
+
+    private void prefetchWest() {
+        int minChunkZ = java.lang.Math.floorDiv(region.originZ, Chunk.SZ);
+        int maxChunkZ = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ);
+        int desired = java.lang.Math.floorDiv(region.originX, Chunk.SX) - PREFETCH_LOOKAHEAD_CHUNKS;
+        if (prefetchedWest <= desired) {
+            return;
+        }
+        for (int chunkX = prefetchedWest - 1; chunkX >= desired; chunkX--) {
+            requestColumn(chunkX, minChunkZ, maxChunkZ);
+        }
+        prefetchedWest = desired;
+    }
+
+    private void prefetchSouth() {
+        int minChunkX = java.lang.Math.floorDiv(region.originX, Chunk.SX);
+        int maxChunkX = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX);
+        int desired = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ) + PREFETCH_LOOKAHEAD_CHUNKS;
+        if (prefetchedSouth >= desired) {
+            return;
+        }
+        for (int chunkZ = prefetchedSouth + 1; chunkZ <= desired; chunkZ++) {
+            requestRow(chunkZ, minChunkX, maxChunkX);
+        }
+        prefetchedSouth = desired;
+    }
+
+    private void prefetchNorth() {
+        int minChunkX = java.lang.Math.floorDiv(region.originX, Chunk.SX);
+        int maxChunkX = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX);
+        int desired = java.lang.Math.floorDiv(region.originZ, Chunk.SZ) - PREFETCH_LOOKAHEAD_CHUNKS;
+        if (prefetchedNorth <= desired) {
+            return;
+        }
+        for (int chunkZ = prefetchedNorth - 1; chunkZ >= desired; chunkZ--) {
+            requestRow(chunkZ, minChunkX, maxChunkX);
+        }
+        prefetchedNorth = desired;
+    }
+
+    private void requestColumn(int chunkX, int minChunkZ, int maxChunkZ) {
+        for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+            chunkManager.requestChunk(new ChunkPos(chunkX, chunkZ));
+        }
+    }
+
+    private void requestRow(int chunkZ, int minChunkX, int maxChunkX) {
+        for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            chunkManager.requestChunk(new ChunkPos(chunkX, chunkZ));
+        }
     }
 
     private float angularDifference(float current, float previous) {
