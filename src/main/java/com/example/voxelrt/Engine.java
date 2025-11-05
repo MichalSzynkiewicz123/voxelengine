@@ -286,7 +286,9 @@ public class Engine {
         createOutputTexture();
 
         generator = new WorldGenerator(1337L, 62);
-        chunkManager = new ChunkManager(generator, 256);
+        int chunkCacheSize = determineChunkCacheSize();
+        chunkManager = new ChunkManager(generator, chunkCacheSize);
+        System.out.println("[Engine] Chunk cache capacity set to " + chunkManager.getMaxLoaded() + " chunks");
 
         // Spawn above ground
         int spawnX = (int) Math.floor(camera.position.x);
@@ -310,6 +312,46 @@ public class Engine {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
         ssboVoxelsCoarse = region.ssboCoarse();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+    }
+
+    private int determineChunkCacheSize() {
+        String configured = System.getProperty("voxel.maxChunks");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("VOXEL_MAX_CHUNKS");
+        }
+        if (configured != null) {
+            try {
+                int parsed = Integer.parseInt(configured.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+                System.err.println("[Engine] Ignoring non-positive chunk cache override: " + configured);
+            } catch (NumberFormatException ex) {
+                System.err.println("[Engine] Failed to parse chunk cache override '" + configured + "': " + ex.getMessage());
+            }
+        }
+
+        long chunkBytes = (long) Chunk.SX * Chunk.SY * Chunk.SZ * Integer.BYTES;
+        long maxMemory = Runtime.getRuntime().maxMemory();
+        if (maxMemory <= 0 || maxMemory == Long.MAX_VALUE) {
+            long total = Runtime.getRuntime().totalMemory();
+            if (total > 0 && total != Long.MAX_VALUE) {
+                maxMemory = total;
+            }
+        }
+
+        if (maxMemory <= 0 || maxMemory == Long.MAX_VALUE) {
+            return ChunkManager.DEFAULT_CACHE_SIZE;
+        }
+
+        long budget = java.lang.Math.max(maxMemory / 5, 128L << 20);
+        long computed = budget / chunkBytes;
+        if (computed <= 0) {
+            return ChunkManager.DEFAULT_CACHE_SIZE;
+        }
+
+        long capped = java.lang.Math.min(Integer.MAX_VALUE, computed);
+        return (int) java.lang.Math.max(ChunkManager.MIN_CACHE_SIZE, capped);
     }
 
     private void cacheComputeUniformLocations() {
