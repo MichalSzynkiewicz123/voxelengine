@@ -3,6 +3,7 @@ package com.example.voxelrt;
 import com.example.voxelrt.mesh.ChunkBatcher;
 import com.example.voxelrt.mesh.ChunkMesh;
 import com.example.voxelrt.mesh.MeshBuilder;
+import com.example.voxelrt.physics.PhysicsSystem;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -96,6 +97,7 @@ public class Engine {
     private ChunkManager chunkManager;
     private ActiveRegion region;
     private int placeBlock = Blocks.GRASS;
+    private PhysicsSystem physicsSystem;
 
     private boolean debugGradient = false;
     private boolean presentTest = false;
@@ -374,6 +376,7 @@ public class Engine {
         int chunkCacheSize = determineChunkCacheSize();
         chunkManager = new ChunkManager(generator, chunkCacheSize);
         System.out.println("[Engine] Chunk cache capacity set to " + chunkManager.getMaxLoaded() + " chunks");
+        physicsSystem = new PhysicsSystem();
 
         // Spawn above ground
         int spawnX = (int) Math.floor(camera.position.x);
@@ -590,6 +593,9 @@ public class Engine {
                 continue;
             }
             MeshBuilder.MeshData data = MeshBuilder.build(chunk, chunkManager);
+            if (physicsSystem != null) {
+                physicsSystem.updateStaticChunkCollider(chunk, data);
+            }
             ChunkMesh old = chunk.mesh();
             ChunkMesh nextMesh = null;
             if (data.instanceCount() > 0) {
@@ -697,6 +703,9 @@ public class Engine {
             chunkManager.update();
             boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
             java.util.List<Chunk> loadedChunks = chunkManager.snapshotLoadedChunks();
+            if (physicsSystem != null) {
+                physicsSystem.pruneStaticChunks(loadedChunks);
+            }
             rebuildChunkMeshes(loadedChunks);
 
             int cx = (int) Math.floor(camera.position.x);
@@ -739,6 +748,10 @@ public class Engine {
             java.util.List<Chunk> visibleChunks = filterVisibleChunks(loadedChunks, frustum);
 
             updateDynamicLights(now);
+
+            if (physicsSystem != null) {
+                physicsSystem.stepSimulation(dt);
+            }
 
             // Compute pass
             if (!rasterEnabled && computeEnabled) {
@@ -1065,6 +1078,9 @@ public class Engine {
         glDeleteVertexArrays(vaoQuad);
         if (chunkBatcher != null) {
             chunkBatcher.close();
+        }
+        if (physicsSystem != null) {
+            physicsSystem.close();
         }
         if (chunkManager != null) {
             for (Chunk chunk : chunkManager.snapshotLoadedChunks()) {
