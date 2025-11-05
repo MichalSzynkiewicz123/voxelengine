@@ -1,5 +1,8 @@
 package com.example.voxelrt;
 
+import com.example.voxelrt.mesh.ChunkMesh;
+import com.example.voxelrt.mesh.MeshBuilder;
+
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.lwjgl.glfw.GLFWVidMode;
@@ -28,7 +31,7 @@ public class Engine {
     private int width = 1280, height = 720;
     private float resolutionScale = 1.0f;
 
-    private int computeProgram, quadProgram;
+    private int computeProgram, quadProgram, meshProgram;
     private int locComputeSkyModel = -1;
     private int locComputeTurbidity = -1;
     private int locComputeSkyIntensity = -1;
@@ -57,6 +60,9 @@ public class Engine {
     private int locQuadTex = -1;
     private int locQuadScreenSize = -1;
     private int locQuadPresentTest = -1;
+    private int locMeshProj = -1;
+    private int locMeshView = -1;
+    private int locMeshSunDir = -1;
     private int outputTex, vaoQuad;
     private int ssboVoxels;
     private int ssboVoxelsCoarse;
@@ -73,6 +79,7 @@ public class Engine {
     private boolean debugGradient = false;
     private boolean presentTest = false;
     private boolean computeEnabled = true;
+    private boolean rasterEnabled = false;
     private boolean useGPUWorld = false; // start with GPU fallback visible
     private float lodSwitchDistance = 72.0f;
     private float lastRegionYaw = Float.NaN;
@@ -174,6 +181,10 @@ public class Engine {
                     computeEnabled = !computeEnabled;
                     System.out.println("[DEBUG] computeEnabled=" + computeEnabled);
                 }
+                if (key == GLFW_KEY_M) {
+                    rasterEnabled = !rasterEnabled;
+                    System.out.println("[DEBUG] rasterEnabled=" + rasterEnabled);
+                }
                 if (key == GLFW_KEY_H) {
                     useGPUWorld = !useGPUWorld;
                     System.out.println("[DEBUG] useGPUWorld=" + useGPUWorld);
@@ -218,8 +229,10 @@ public class Engine {
         System.out.println("OpenGL: " + glGetString(GL_VERSION));
         System.out.println("GPU: " + glGetString(GL_RENDERER));
         glClearColor(0.12f, 0.14f, 0.18f, 1.0f);
-        glDisable(GL_CULL_FACE);
-        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
     }
 
     /**
@@ -287,8 +300,13 @@ public class Engine {
                 compileShader(GL_VERTEX_SHADER, loadResource("shaders/quad.vert")),
                 compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/quad.frag"))
         );
+        meshProgram = linkProgram(
+                compileShader(GL_VERTEX_SHADER, loadResource("shaders/chunk.vert")),
+                compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/chunk.frag"))
+        );
         cacheComputeUniformLocations();
         cacheQuadUniformLocations();
+        cacheMeshUniformLocations();
 
         vaoQuad = glGenVertexArrays();
         createOutputTexture();
@@ -398,6 +416,54 @@ public class Engine {
         locQuadPresentTest = glGetUniformLocation(quadProgram, "uPresentTest");
     }
 
+    private void cacheMeshUniformLocations() {
+        locMeshProj = glGetUniformLocation(meshProgram, "uProj");
+        locMeshView = glGetUniformLocation(meshProgram, "uView");
+        locMeshSunDir = glGetUniformLocation(meshProgram, "uSunDir");
+    }
+
+    private void rebuildChunkMeshes(java.util.List<Chunk> chunks) {
+        if (chunks.isEmpty()) {
+            return;
+        }
+        for (Chunk chunk : chunks) {
+            if (!chunk.isMeshDirty()) {
+                continue;
+            }
+            MeshBuilder.MeshData data = MeshBuilder.build(chunk, chunkManager);
+            ChunkMesh old = chunk.mesh();
+            ChunkMesh nextMesh = null;
+            if (data.vertexCount() > 0) {
+                nextMesh = ChunkMesh.create(data.vertices(), data.vertexCount());
+            }
+            if (old != null) {
+                old.destroy();
+            }
+            chunk.setMesh(nextMesh);
+            chunk.clearMeshDirty();
+        }
+    }
+
+    private void renderChunkMeshes(Matrix4f proj, Matrix4f view, java.util.List<Chunk> chunks) {
+        glViewport(0, 0, width, height);
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
+        glUseProgram(meshProgram);
+        uploadMatrix(locMeshProj, proj);
+        uploadMatrix(locMeshView, view);
+        Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
+        if (locMeshSunDir >= 0) {
+            glUniform3f(locMeshSunDir, sunDir.x, sunDir.y, sunDir.z);
+        }
+        for (Chunk chunk : chunks) {
+            ChunkMesh mesh = chunk.mesh();
+            if (mesh != null && mesh.vertexCount() > 0) {
+                mesh.draw();
+            }
+        }
+        glUseProgram(0);
+    }
+
     private void createOutputTexture() {
         if (outputTex != 0) glDeleteTextures(outputTex);
         int rw = Math.max(1, (int) (width * resolutionScale));
@@ -428,11 +494,13 @@ public class Engine {
             lastTime = now;
             fpsFrames++;
 
-            glClear(GL_COLOR_BUFFER_BIT);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             pollInput(dt);
 
             chunkManager.update();
             boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
+            java.util.List<Chunk> loadedChunks = chunkManager.snapshotLoadedChunks();
+            rebuildChunkMeshes(loadedChunks);
 
             int cx = (int) Math.floor(camera.position.x);
             int cy = (int) Math.floor(camera.position.y);
@@ -470,7 +538,7 @@ public class Engine {
             updatePrefetch();
 
             // Compute pass
-            if (computeEnabled) {
+            if (!rasterEnabled && computeEnabled) {
                 glUseProgram(computeProgram);
                 if (locComputeSkyModel >= 0) glUniform1i(locComputeSkyModel, 1);         // Preetham
                 if (locComputeTurbidity >= 0) glUniform1f(locComputeTurbidity, 2.5f);    // mild clear sky
@@ -518,15 +586,23 @@ public class Engine {
             }
 
             // Present
-            glViewport(0, 0, width, height);
-            glUseProgram(quadProgram);
-            glBindVertexArray(vaoQuad);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, outputTex);
-            if (locQuadTex >= 0) glUniform1i(locQuadTex, 0);
-            if (locQuadScreenSize >= 0) glUniform2i(locQuadScreenSize, width, height);
-            if (locQuadPresentTest >= 0) glUniform1i(locQuadPresentTest, presentTest ? 1 : 0);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (rasterEnabled) {
+                renderChunkMeshes(proj, view, loadedChunks);
+            } else {
+                glDisable(GL_DEPTH_TEST);
+                glDisable(GL_CULL_FACE);
+                glViewport(0, 0, width, height);
+                glUseProgram(quadProgram);
+                glBindVertexArray(vaoQuad);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, outputTex);
+                if (locQuadTex >= 0) glUniform1i(locQuadTex, 0);
+                if (locQuadScreenSize >= 0) glUniform2i(locQuadScreenSize, width, height);
+                if (locQuadPresentTest >= 0) glUniform1i(locQuadPresentTest, presentTest ? 1 : 0);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glEnable(GL_DEPTH_TEST);
+                glEnable(GL_CULL_FACE);
+            }
 
             if (now - lastPrint > 1.0) {
                 int[] who = new int[1];
@@ -706,9 +782,13 @@ public class Engine {
     private void cleanup() {
         glDeleteProgram(computeProgram);
         glDeleteProgram(quadProgram);
+        glDeleteProgram(meshProgram);
         glDeleteTextures(outputTex);
         glDeleteVertexArrays(vaoQuad);
         if (chunkManager != null) {
+            for (Chunk chunk : chunkManager.snapshotLoadedChunks()) {
+                chunk.releaseMesh();
+            }
             chunkManager.shutdown();
         }
         glfwDestroyWindow(window);

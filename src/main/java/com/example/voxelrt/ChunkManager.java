@@ -1,8 +1,10 @@
 package com.example.voxelrt;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,7 +70,15 @@ public class ChunkManager {
         }
         Chunk c = getIfLoaded(new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ)));
         if (c != null) {
-            c.set(java.lang.Math.floorMod(x, Chunk.SX), y, java.lang.Math.floorMod(z, Chunk.SZ), b);
+            int localX = java.lang.Math.floorMod(x, Chunk.SX);
+            int localZ = java.lang.Math.floorMod(z, Chunk.SZ);
+            int previous = c.get(localX, y, localZ);
+            c.set(localX, y, localZ, b);
+            if (previous != b) {
+                synchronized (lock) {
+                    markNeighborsForVoxelChange(c.pos(), localX, localZ);
+                }
+            }
         }
     }
 
@@ -156,9 +166,11 @@ public class ChunkManager {
         ChunkLoadResult result;
         while ((result = completed.poll()) != null) {
             applyEdits(result.chunk);
+            result.chunk.markMeshDirty();
             synchronized (lock) {
                 map.put(result.pos, result.chunk);
                 lru.put(result.pos, result.chunk);
+                markNeighborsDirty(result.pos);
                 trimToMaxLocked();
             }
             changed = true;
@@ -200,7 +212,9 @@ public class ChunkManager {
             it.remove();
             Chunk removed = map.remove(oldest);
             if (removed != null) {
+                removed.releaseMesh();
                 removed.prepareForPool();
+                markNeighborsDirty(oldest);
                 chunkPool.offer(removed);
             }
         }
@@ -208,6 +222,47 @@ public class ChunkManager {
 
     private static int sanitizeMaxLoaded(int maxLoaded) {
         return java.lang.Math.max(MIN_CACHE_SIZE, maxLoaded);
+    }
+
+    private void markNeighborsDirty(ChunkPos pos) {
+        int cx = pos.cx();
+        int cz = pos.cz();
+        Chunk neighbor;
+        neighbor = map.get(new ChunkPos(cx - 1, cz));
+        if (neighbor != null) neighbor.markMeshDirty();
+        neighbor = map.get(new ChunkPos(cx + 1, cz));
+        if (neighbor != null) neighbor.markMeshDirty();
+        neighbor = map.get(new ChunkPos(cx, cz - 1));
+        if (neighbor != null) neighbor.markMeshDirty();
+        neighbor = map.get(new ChunkPos(cx, cz + 1));
+        if (neighbor != null) neighbor.markMeshDirty();
+    }
+
+    private void markNeighborsForVoxelChange(ChunkPos pos, int localX, int localZ) {
+        int cx = pos.cx();
+        int cz = pos.cz();
+        if (localX == 0) {
+            Chunk west = map.get(new ChunkPos(cx - 1, cz));
+            if (west != null) west.markMeshDirty();
+        }
+        if (localX == Chunk.SX - 1) {
+            Chunk east = map.get(new ChunkPos(cx + 1, cz));
+            if (east != null) east.markMeshDirty();
+        }
+        if (localZ == 0) {
+            Chunk north = map.get(new ChunkPos(cx, cz - 1));
+            if (north != null) north.markMeshDirty();
+        }
+        if (localZ == Chunk.SZ - 1) {
+            Chunk south = map.get(new ChunkPos(cx, cz + 1));
+            if (south != null) south.markMeshDirty();
+        }
+    }
+
+    public List<Chunk> snapshotLoadedChunks() {
+        synchronized (lock) {
+            return new ArrayList<>(map.values());
+        }
     }
 
     private CompletableFuture<Chunk> ensureTask(ChunkPos pos) {

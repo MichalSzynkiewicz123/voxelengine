@@ -1,11 +1,15 @@
 package com.example.voxelrt;
 
+import com.example.voxelrt.mesh.ChunkMesh;
+
 public class Chunk {
     public static final int SX = 16, SY = 256, SZ = 16;
     private static final int SECTION_HEIGHT = 16;
     private static final int SECTION_COUNT = (SY + SECTION_HEIGHT - 1) / SECTION_HEIGHT;
     private ChunkPos pos;
     private final Section[] sections = new Section[SECTION_COUNT];
+    private volatile boolean meshDirty = true;
+    private volatile ChunkMesh mesh;
 
     public Chunk(ChunkPos p) {
         this.pos = p;
@@ -17,6 +21,8 @@ public class Chunk {
 
     void reset(ChunkPos newPos) {
         this.pos = newPos;
+        this.meshDirty = true;
+        this.mesh = null;
     }
 
     private static byte encode(int blockId) {
@@ -84,6 +90,7 @@ public class Chunk {
             section.voxels[idx] = 0;
             section.nonAir--;
             maybeReleaseSection(sectionIndex);
+            markMeshDirty();
             return;
         }
 
@@ -101,6 +108,7 @@ public class Chunk {
             section.nonAir++;
         }
         section.voxels[idx] = encoded;
+        markMeshDirty();
     }
 
     public void fill(WorldGenerator gen) {
@@ -128,6 +136,7 @@ public class Chunk {
                 }
             }
         }
+        markMeshDirty();
     }
 
     private void clearSections() {
@@ -137,11 +146,43 @@ public class Chunk {
                 section.clear();
             }
         }
+        markMeshDirty();
     }
 
     void prepareForPool() {
         clearSections();
         this.pos = null;
+        this.mesh = null;
+        this.meshDirty = true;
+    }
+
+    public boolean isMeshDirty() {
+        return meshDirty;
+    }
+
+    public void markMeshDirty() {
+        meshDirty = true;
+    }
+
+    public void clearMeshDirty() {
+        meshDirty = false;
+    }
+
+    public ChunkMesh mesh() {
+        return mesh;
+    }
+
+    public void setMesh(ChunkMesh mesh) {
+        this.mesh = mesh;
+    }
+
+    public void releaseMesh() {
+        ChunkMesh current = this.mesh;
+        if (current != null) {
+            current.destroy();
+            this.mesh = null;
+        }
+        meshDirty = true;
     }
 
     private static final class Section {
