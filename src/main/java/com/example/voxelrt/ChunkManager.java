@@ -4,9 +4,11 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Keeps track of chunks that have been generated and loaded into memory.
@@ -25,7 +27,7 @@ public class ChunkManager {
     private final Map<Long, Integer> edits = new HashMap<>();
     private final Object lock = new Object();
     private final Object editLock = new Object();
-    private final ExecutorService executor;
+    private final JobSystem jobSystem;
     private final ConcurrentHashMap<ChunkPos, CompletableFuture<Chunk>> pending = new ConcurrentHashMap<>();
     private final ConcurrentLinkedQueue<ChunkLoadResult> completed = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean integratedSinceLastPoll = new AtomicBoolean();
@@ -35,13 +37,8 @@ public class ChunkManager {
         this.gen = g;
         this.maxLoaded = sanitizeMaxLoaded(maxLoaded);
         int threads = java.lang.Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
-        AtomicInteger ctr = new AtomicInteger();
-        ThreadFactory factory = r -> {
-            Thread t = new Thread(r, "ChunkGen-" + ctr.incrementAndGet());
-            t.setDaemon(true);
-            return t;
-        };
-        this.executor = Executors.newFixedThreadPool(threads, factory);
+        this.jobSystem = new JobSystem("ChunkGen-", threads);
+        System.out.println("[ChunkManager] Job system started with " + threads + " worker thread" + (threads == 1 ? "" : "s"));
     }
 
     /**
@@ -177,7 +174,7 @@ public class ChunkManager {
     }
 
     public void shutdown() {
-        executor.shutdownNow();
+        jobSystem.close();
     }
 
     public void setMaxLoaded(int maxLoaded) {
@@ -215,27 +212,23 @@ public class ChunkManager {
 
     private CompletableFuture<Chunk> ensureTask(ChunkPos pos) {
         return pending.computeIfAbsent(pos, p -> {
-            CompletableFuture<Chunk> future = new CompletableFuture<>();
+            CompletableFuture<Chunk> future = jobSystem.submit(() -> {
+                Chunk chunk = obtainChunk(p);
+                try {
+                    chunk.fill(gen);
+                    return chunk;
+                } catch (Throwable t) {
+                    chunk.prepareForPool();
+                    chunkPool.offer(chunk);
+                    throw t;
+                }
+            });
             future.whenComplete((chunk, throwable) -> {
                 pending.remove(p, future);
                 if (throwable == null) {
                     completed.add(new ChunkLoadResult(p, chunk));
                 } else {
                     System.err.println("[ChunkManager] Failed to generate chunk " + p + ": " + throwable);
-                }
-            });
-            executor.submit(() -> {
-                Chunk chunk = null;
-                try {
-                    chunk = obtainChunk(p);
-                    chunk.fill(gen);
-                    future.complete(chunk);
-                } catch (Throwable t) {
-                    if (chunk != null) {
-                        chunk.prepareForPool();
-                        chunkPool.offer(chunk);
-                    }
-                    future.completeExceptionally(t);
                 }
             });
             return future;
