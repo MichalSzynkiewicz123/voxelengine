@@ -2,35 +2,13 @@ package com.example.voxelrt;
 
 public class Chunk {
     public static final int SX = 16, SY = 256, SZ = 16;
-    private static final int X_BITS = Integer.SIZE - Integer.numberOfLeadingZeros(SX - 1);
-    private static final int Y_BITS = Integer.SIZE - Integer.numberOfLeadingZeros(SY - 1);
-    private static final int Z_BITS = Integer.SIZE - Integer.numberOfLeadingZeros(SZ - 1);
+    private static final int SECTION_HEIGHT = 16;
+    private static final int SECTION_COUNT = (SY + SECTION_HEIGHT - 1) / SECTION_HEIGHT;
     public final ChunkPos pos;
-    private final byte[] vox = new byte[SX * SY * SZ];
+    private final Section[] sections = new Section[SECTION_COUNT];
 
     public Chunk(ChunkPos p) {
         this.pos = p;
-    }
-
-    private static int idx(int x, int y, int z) {
-        int morton = 0;
-        int bitPos = 0;
-        int maxBits = Math.max(Math.max(X_BITS, Y_BITS), Z_BITS);
-        for (int bit = 0; bit < maxBits; bit++) {
-            if (bit < X_BITS) {
-                morton |= ((x >> bit) & 1) << bitPos;
-                bitPos++;
-            }
-            if (bit < Y_BITS) {
-                morton |= ((y >> bit) & 1) << bitPos;
-                bitPos++;
-            }
-            if (bit < Z_BITS) {
-                morton |= ((z >> bit) & 1) << bitPos;
-                bitPos++;
-            }
-        }
-        return morton;
     }
 
     private static byte encode(int blockId) {
@@ -40,17 +18,87 @@ public class Chunk {
         return (byte) blockId;
     }
 
+    private static int localIndex(int x, int y, int z) {
+        return x + (z * SX) + (y * SX * SZ);
+    }
+
+    private Section section(int y) {
+        int sectionIndex = y / SECTION_HEIGHT;
+        if (sectionIndex < 0 || sectionIndex >= sections.length) {
+            return null;
+        }
+        return sections[sectionIndex];
+    }
+
+    private Section ensureSection(int y) {
+        int sectionIndex = y / SECTION_HEIGHT;
+        if (sectionIndex < 0 || sectionIndex >= sections.length) {
+            return null;
+        }
+        Section section = sections[sectionIndex];
+        if (section == null) {
+            section = new Section();
+            sections[sectionIndex] = section;
+        }
+        return section;
+    }
+
+    private void maybeReleaseSection(int sectionIndex) {
+        Section section = sections[sectionIndex];
+        if (section != null && section.nonAir == 0) {
+            sections[sectionIndex] = null;
+        }
+    }
+
     public int get(int x, int y, int z) {
         if ((x | y | z) < 0 || x >= SX || y >= SY || z >= SZ) return Blocks.AIR;
-        return vox[idx(x, y, z)] & 0xFF;
+        Section section = section(y);
+        if (section == null) {
+            return Blocks.AIR;
+        }
+        int localY = y % SECTION_HEIGHT;
+        return section.voxels[localIndex(x, localY, z)] & 0xFF;
     }
 
     public void set(int x, int y, int z, int b) {
         if ((x | y | z) < 0 || x >= SX || y >= SY || z >= SZ) return;
-        vox[idx(x, y, z)] = encode(b);
+        if (b == Blocks.AIR) {
+            int sectionIndex = y / SECTION_HEIGHT;
+            Section section = section(y);
+            if (section == null) {
+                return;
+            }
+            int localY = y % SECTION_HEIGHT;
+            int idx = localIndex(x, localY, z);
+            if ((section.voxels[idx] & 0xFF) == 0) {
+                return;
+            }
+            section.voxels[idx] = 0;
+            section.nonAir--;
+            maybeReleaseSection(sectionIndex);
+            return;
+        }
+
+        Section section = ensureSection(y);
+        if (section == null) {
+            return;
+        }
+        int localY = y % SECTION_HEIGHT;
+        int idx = localIndex(x, localY, z);
+        byte encoded = encode(b);
+        if (section.voxels[idx] == encoded) {
+            return;
+        }
+        if ((section.voxels[idx] & 0xFF) == 0) {
+            section.nonAir++;
+        }
+        section.voxels[idx] = encoded;
     }
 
     public void fill(WorldGenerator gen) {
+        for (int i = 0; i < sections.length; i++) {
+            sections[i] = null;
+        }
         int wx0 = pos.cx() * SX, wz0 = pos.cz() * SZ;
         for (int z = 0; z < SZ; z++) {
             int wz = wz0 + z;
@@ -70,13 +118,14 @@ public class Chunk {
                     } else {
                         block = column.lowerBlock();
                     }
-                    vox[idx(x, y, z)] = encode(block);
-                }
-
-                for (int y = Math.max(topY + 1, 0); y < SY; y++) {
-                    vox[idx(x, y, z)] = 0;
+                    set(x, y, z, block);
                 }
             }
         }
+    }
+
+    private static final class Section {
+        final byte[] voxels = new byte[SX * SECTION_HEIGHT * SZ];
+        int nonAir = 0;
     }
 }
