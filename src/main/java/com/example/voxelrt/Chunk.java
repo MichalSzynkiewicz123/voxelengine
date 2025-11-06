@@ -2,6 +2,8 @@ package com.example.voxelrt;
 
 import com.example.voxelrt.mesh.ChunkMesh;
 
+import java.util.Random;
+
 public class Chunk {
     public static final int SX = 16, SY = 256, SZ = 16;
     private static final int SECTION_HEIGHT = 16;
@@ -114,29 +116,206 @@ public class Chunk {
     public void fill(WorldGenerator gen) {
         clearSections();
         int wx0 = pos.cx() * SX, wz0 = pos.cz() * SZ;
+        WorldGenerator.Column[] columns = new WorldGenerator.Column[SX * SZ];
         for (int z = 0; z < SZ; z++) {
             int wz = wz0 + z;
             for (int x = 0; x < SX; x++) {
                 int wx = wx0 + x;
                 WorldGenerator.Column column = gen.sampleColumn(wx, wz);
-                int ground = column.groundHeight();
-                int fillerStart = Math.max(0, ground - 3);
-                int topY = Math.min(ground, SY - 1);
-
+                columns[z * SX + x] = column;
+                int topY = Math.min(column.groundHeight(), SY - 1);
                 for (int y = 0; y <= topY; y++) {
-                    int block;
-                    if (ground >= 0 && y == ground) {
-                        block = column.surfaceBlock();
-                    } else if (y >= fillerStart) {
-                        block = column.fillerBlock();
-                    } else {
-                        block = column.lowerBlock();
+                    int block = gen.sampleBlock(column, wx, y, wz);
+                    if (block != Blocks.AIR) {
+                        set(x, y, z, block);
                     }
-                    set(x, y, z, block);
                 }
             }
         }
+        populateStructures(gen, columns);
         markMeshDirty();
+    }
+
+    private void populateStructures(WorldGenerator gen, WorldGenerator.Column[] columns) {
+        Random rng = gen.randomForChunk(pos.cx(), pos.cz());
+        for (int z = 0; z < SZ; z++) {
+            for (int x = 0; x < SX; x++) {
+                WorldGenerator.Column column = columns[z * SX + x];
+                if (column == null) {
+                    continue;
+                }
+                int ground = column.groundHeight();
+                if (ground <= 0 || ground >= SY - 6) {
+                    continue;
+                }
+                int localY = Math.min(ground, SY - 1);
+                int surface = get(x, localY, z);
+                if (surface == Blocks.AIR) {
+                    continue;
+                }
+                switch (column.biome()) {
+                    case FOREST -> {
+                        if (surface == Blocks.GRASS && rng.nextFloat() < 0.08f) {
+                            placeTree(rng, x, localY + 1, z);
+                        } else if (surface == Blocks.GRASS && rng.nextFloat() < 0.10f) {
+                            placeShrub(rng, x, localY + 1, z);
+                        }
+                    }
+                    case PLAINS -> {
+                        if (surface == Blocks.GRASS && rng.nextFloat() < 0.025f) {
+                            placeTree(rng, x, localY + 1, z);
+                        } else if (surface == Blocks.GRASS && rng.nextFloat() < 0.06f) {
+                            placeShrub(rng, x, localY + 1, z);
+                        }
+                    }
+                    case DESERT -> {
+                        if (surface == Blocks.SAND && rng.nextFloat() < 0.05f) {
+                            placeCactus(rng, x, localY + 1, z);
+                        }
+                    }
+                    case MOUNTAINS -> {
+                        if (surface == Blocks.STONE && rng.nextFloat() < 0.04f) {
+                            placeRock(rng, x, localY + 1, z);
+                        }
+                    }
+                    case TUNDRA -> {
+                        if (surface == Blocks.SNOW && rng.nextFloat() < 0.02f) {
+                            placeRock(rng, x, localY + 1, z);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void placeRock(Random rng, int x, int y, int z) {
+        int radius = 1 + rng.nextInt(2);
+        for (int dy = 0; dy <= radius; dy++) {
+            int ay = y + dy;
+            if (ay < 0 || ay >= SY) continue;
+            for (int dx = -radius; dx <= radius; dx++) {
+                int ax = x + dx;
+                if (ax < 0 || ax >= SX) continue;
+                for (int dz = -radius; dz <= radius; dz++) {
+                    int az = z + dz;
+                    if (az < 0 || az >= SZ) continue;
+                    int dist2 = dx * dx + dz * dz + dy * dy;
+                    if (dist2 <= radius * radius + rng.nextInt(2)) {
+                        if (get(ax, ay, az) == Blocks.AIR) {
+                            set(ax, ay, az, Blocks.STONE);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void placeShrub(Random rng, int x, int y, int z) {
+        if (y <= 0 || y >= SY) return;
+        if (get(x, y, z) != Blocks.AIR) return;
+        set(x, y, z, Blocks.LOG);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                int ax = x + dx;
+                int az = z + dz;
+                if (ax < 0 || ax >= SX || az < 0 || az >= SZ) continue;
+                int ay = y + 1;
+                if (ay >= SY) continue;
+                if (java.lang.Math.abs(dx) == 1 && java.lang.Math.abs(dz) == 1 && rng.nextBoolean()) {
+                    continue;
+                }
+                if (get(ax, ay, az) == Blocks.AIR) {
+                    set(ax, ay, az, Blocks.LEAVES);
+                }
+            }
+        }
+        if (y + 2 < SY && get(x, y + 2, z) == Blocks.AIR) {
+            set(x, y + 2, z, Blocks.LEAVES);
+        }
+    }
+
+    private void placeCactus(Random rng, int x, int y, int z) {
+        if (x <= 0 || x >= SX - 1 || z <= 0 || z >= SZ - 1) {
+            return;
+        }
+        int height = 2 + rng.nextInt(3);
+        if (y + height >= SY) {
+            return;
+        }
+        for (int i = 0; i < height; i++) {
+            if (get(x, y + i, z) != Blocks.AIR) {
+                return;
+            }
+        }
+        for (int i = 0; i < height; i++) {
+            set(x, y + i, z, Blocks.CACTUS);
+        }
+    }
+
+    private void placeTree(Random rng, int x, int y, int z) {
+        if (x <= 1 || x >= SX - 2 || z <= 1 || z >= SZ - 2) {
+            return;
+        }
+        int height = 4 + rng.nextInt(3);
+        if (y + height + 2 >= SY) {
+            return;
+        }
+        for (int i = 0; i < height + 2; i++) {
+            int ay = y + i;
+            if (get(x, ay, z) != Blocks.AIR) {
+                return;
+            }
+        }
+
+        int leafBase = y + height - 2;
+        for (int dy = -2; dy <= 2; dy++) {
+            int ay = leafBase + dy;
+            if (ay < 0 || ay >= SY) continue;
+            int radius = 2 - java.lang.Math.abs(dy);
+            for (int dx = -radius; dx <= radius; dx++) {
+                int ax = x + dx;
+                if (ax < 0 || ax >= SX) return;
+                for (int dz = -radius; dz <= radius; dz++) {
+                    int az = z + dz;
+                    if (az < 0 || az >= SZ) return;
+                    if (java.lang.Math.abs(dx) == radius && java.lang.Math.abs(dz) == radius && rng.nextBoolean()) {
+                        continue;
+                    }
+                    int existing = get(ax, ay, az);
+                    if (existing != Blocks.AIR && existing != Blocks.LEAVES) {
+                        return;
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < height; i++) {
+            set(x, y + i, z, Blocks.LOG);
+        }
+
+        for (int dy = -2; dy <= 2; dy++) {
+            int ay = leafBase + dy;
+            if (ay < 0 || ay >= SY) continue;
+            int radius = 2 - java.lang.Math.abs(dy);
+            for (int dx = -radius; dx <= radius; dx++) {
+                int ax = x + dx;
+                if (ax < 0 || ax >= SX) continue;
+                for (int dz = -radius; dz <= radius; dz++) {
+                    int az = z + dz;
+                    if (az < 0 || az >= SZ) continue;
+                    if (java.lang.Math.abs(dx) == radius && java.lang.Math.abs(dz) == radius && rng.nextBoolean()) {
+                        continue;
+                    }
+                    if (get(ax, ay, az) == Blocks.AIR) {
+                        set(ax, ay, az, Blocks.LEAVES);
+                    }
+                }
+            }
+        }
+
+        if (y + height < SY) {
+            set(x, y + height, z, Blocks.LEAVES);
+        }
     }
 
     private void clearSections() {
