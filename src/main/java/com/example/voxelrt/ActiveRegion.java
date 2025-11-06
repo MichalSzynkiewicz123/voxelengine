@@ -155,7 +155,7 @@ public class ActiveRegion {
      * entire data set is uploaded to the GPU via {@link #uploadAll()}.
      */
     public void rebuildAround(int cx, int cy, int cz) {
-        rebuildAround(cx, cy, cz, null);
+        rebuildAround(cx, cy, cz, null, null, 0);
     }
 
     /**
@@ -163,6 +163,10 @@ public class ActiveRegion {
      * of the camera's view volume.
      */
     public void rebuildAround(int cx, int cy, int cz, Frustum frustum) {
+        rebuildAround(cx, cy, cz, frustum, null, 0);
+    }
+
+    public void rebuildAround(int cx, int cy, int cz, Frustum frustum, ChunkPos requestCenter, int requestRadiusChunks) {
         cm.update();
         originX = cx - rx / 2;
         originY = java.lang.Math.max(0, java.lang.Math.min(Chunk.SY - ry, cy - ry / 2));
@@ -189,6 +193,12 @@ public class ActiveRegion {
                 if (xStart >= xEnd) continue;
 
                 ChunkPos pos = new ChunkPos(cxWorld, czWorld);
+                boolean withinRadius = requestCenter == null ||
+                        java.lang.Math.max(java.lang.Math.abs(pos.cx() - requestCenter.cx()),
+                                java.lang.Math.abs(pos.cz() - requestCenter.cz())) <= requestRadiusChunks;
+                if (!withinRadius) {
+                    continue;
+                }
                 cm.requestChunk(pos);
 
                 boolean visible = true;

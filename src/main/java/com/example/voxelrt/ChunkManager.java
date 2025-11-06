@@ -1,11 +1,14 @@
 package com.example.voxelrt;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -37,10 +40,17 @@ public class ChunkManager {
     private final ConcurrentLinkedQueue<ChunkLoadResult> completed = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean integratedSinceLastPoll = new AtomicBoolean();
     private final ConcurrentLinkedQueue<Chunk> chunkPool = new ConcurrentLinkedQueue<>();
+    private final WorldStorage storage;
+    private final Set<ChunkPos> diskLoadedChunks = new HashSet<>();
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
+        this(g, maxLoaded, null);
+    }
+
+    public ChunkManager(WorldGenerator g, int maxLoaded, WorldStorage storage) {
         this.gen = g;
         this.maxLoaded = sanitizeMaxLoaded(maxLoaded);
+        this.storage = storage;
         int threads = resolveThreadCount();
         this.jobSystem = new JobSystem("ChunkGen-", threads);
         System.out.println("[ChunkManager] Job system started with " + threads + " worker thread" + (threads == 1 ? "" : "s"));
@@ -70,6 +80,9 @@ public class ChunkManager {
         long k = key(x, y, z);
         synchronized (editLock) {
             edits.put(k, b);
+            if (storage != null) {
+                diskLoadedChunks.remove(new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ)));
+            }
         }
         Chunk c = getIfLoaded(new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ)));
         if (c != null) {
@@ -205,6 +218,20 @@ public class ChunkManager {
         jobSystem.close();
     }
 
+    public void flushEdits() {
+        if (storage == null) {
+            return;
+        }
+        List<ChunkPos> positions;
+        synchronized (lock) {
+            positions = new ArrayList<>(map.keySet());
+        }
+        for (ChunkPos pos : positions) {
+            storage.saveChunkEditsAsync(pos, gatherEditsForChunk(pos));
+        }
+        storage.waitForPendingSaves();
+    }
+
     public void setMaxLoaded(int maxLoaded) {
         int sanitized = sanitizeMaxLoaded(maxLoaded);
         synchronized (lock) {
@@ -228,10 +255,8 @@ public class ChunkManager {
             it.remove();
             Chunk removed = map.remove(oldest);
             if (removed != null) {
-                removed.releaseMesh();
-                removed.prepareForPool();
                 markNeighborsDirty(oldest);
-                chunkPool.offer(removed);
+                evictChunkLocked(oldest, removed);
             }
         }
     }
@@ -337,21 +362,137 @@ public class ChunkManager {
 
     private void applyEdits(Chunk chunk) {
         ChunkPos pos = chunk.pos();
+        loadDiskEditsIfNeeded(pos);
         int wx0 = pos.cx() * Chunk.SX;
         int wz0 = pos.cz() * Chunk.SZ;
         synchronized (editLock) {
             for (var e : edits.entrySet()) {
                 long k = e.getKey();
-                int x = (int) ((k >> 42) & 0x1FFFFF);
-                int y = (int) ((k >> 32) & 0x3FF);
-                int z = (int) (k & 0x1FFFFF);
-                if (x >= 0x100000) x -= 0x200000;
-                if (z >= 0x100000) z -= 0x200000;
+                int x = decodeX(k);
+                int y = decodeY(k);
+                int z = decodeZ(k);
                 if (x >= wx0 && x < wx0 + Chunk.SX && z >= wz0 && z < wz0 + Chunk.SZ) {
                     chunk.set(x - wx0, y, z - wz0, e.getValue());
                 }
             }
         }
+    }
+
+    private void loadDiskEditsIfNeeded(ChunkPos pos) {
+        if (storage == null) {
+            return;
+        }
+        synchronized (editLock) {
+            if (diskLoadedChunks.contains(pos)) {
+                return;
+            }
+        }
+        List<WorldStorage.ChunkEdit> editsForChunk = storage.loadChunkEdits(pos);
+        if (!editsForChunk.isEmpty()) {
+            int wx0 = pos.cx() * Chunk.SX;
+            int wz0 = pos.cz() * Chunk.SZ;
+            synchronized (editLock) {
+                for (WorldStorage.ChunkEdit edit : editsForChunk) {
+                    long key = key(wx0 + edit.x(), edit.y(), wz0 + edit.z());
+                    edits.put(key, edit.block());
+                }
+                diskLoadedChunks.add(pos);
+            }
+        } else {
+            synchronized (editLock) {
+                diskLoadedChunks.add(pos);
+            }
+        }
+    }
+
+    private List<WorldStorage.ChunkEdit> gatherEditsForChunk(ChunkPos pos) {
+        if (storage == null) {
+            return Collections.emptyList();
+        }
+        int wx0 = pos.cx() * Chunk.SX;
+        int wz0 = pos.cz() * Chunk.SZ;
+        List<WorldStorage.ChunkEdit> chunkEdits = new ArrayList<>();
+        synchronized (editLock) {
+            for (var entry : edits.entrySet()) {
+                long k = entry.getKey();
+                int x = decodeX(k);
+                int y = decodeY(k);
+                int z = decodeZ(k);
+                if (x >= wx0 && x < wx0 + Chunk.SX && z >= wz0 && z < wz0 + Chunk.SZ) {
+                    chunkEdits.add(new WorldStorage.ChunkEdit(x - wx0, y, z - wz0, entry.getValue()));
+                }
+            }
+        }
+        return chunkEdits;
+    }
+
+    private void evictChunkLocked(ChunkPos pos, Chunk chunk) {
+        if (storage != null) {
+            storage.saveChunkEditsAsync(pos, gatherEditsForChunk(pos));
+            synchronized (editLock) {
+                diskLoadedChunks.remove(pos);
+            }
+        }
+        chunk.releaseMesh();
+        chunk.prepareForPool();
+        chunkPool.offer(chunk);
+    }
+
+    private static int decodeX(long key) {
+        int x = (int) ((key >> 42) & 0x1FFFFF);
+        if (x >= 0x100000) x -= 0x200000;
+        return x;
+    }
+
+    private static int decodeY(long key) {
+        return (int) ((key >> 32) & 0x3FF);
+    }
+
+    private static int decodeZ(long key) {
+        int z = (int) (key & 0x1FFFFF);
+        if (z >= 0x100000) z -= 0x200000;
+        return z;
+    }
+
+    public void unloadOutsideRadius(ChunkPos center, int radius) {
+        if (radius < 0) {
+            return;
+        }
+        List<Map.Entry<ChunkPos, Chunk>> toEvict = new ArrayList<>();
+        synchronized (lock) {
+            Iterator<Map.Entry<ChunkPos, Chunk>> it = map.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry<ChunkPos, Chunk> entry = it.next();
+                ChunkPos pos = entry.getKey();
+                if (chebyshevDistance(pos, center) > radius) {
+                    it.remove();
+                    lru.remove(pos);
+                    markNeighborsDirty(pos);
+                    toEvict.add(entry);
+                }
+            }
+        }
+        for (Map.Entry<ChunkPos, Chunk> entry : toEvict) {
+            evictChunkLocked(entry.getKey(), entry.getValue());
+        }
+
+        if (!pending.isEmpty()) {
+            List<Map.Entry<ChunkPos, CompletableFuture<Chunk>>> toCancel = new ArrayList<>();
+            for (Map.Entry<ChunkPos, CompletableFuture<Chunk>> entry : pending.entrySet()) {
+                if (chebyshevDistance(entry.getKey(), center) > radius) {
+                    toCancel.add(entry);
+                }
+            }
+            for (Map.Entry<ChunkPos, CompletableFuture<Chunk>> entry : toCancel) {
+                if (pending.remove(entry.getKey(), entry.getValue())) {
+                    entry.getValue().cancel(true);
+                }
+            }
+        }
+    }
+
+    private static int chebyshevDistance(ChunkPos a, ChunkPos b) {
+        return java.lang.Math.max(java.lang.Math.abs(a.cx() - b.cx()), java.lang.Math.abs(a.cz() - b.cz()));
     }
 
     private static final class ChunkLoadResult {
