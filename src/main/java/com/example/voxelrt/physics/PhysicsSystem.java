@@ -6,6 +6,7 @@ import com.bulletphysics.collision.dispatch.CollisionDispatcher;
 import com.bulletphysics.collision.dispatch.DefaultCollisionConfiguration;
 import com.bulletphysics.collision.dispatch.GhostPairCallback;
 import com.bulletphysics.collision.dispatch.CollisionConfiguration;
+import com.bulletphysics.collision.shapes.BoxShape;
 import com.bulletphysics.collision.shapes.BvhTriangleMeshShape;
 import com.bulletphysics.collision.shapes.CollisionShape;
 import com.bulletphysics.collision.shapes.TriangleIndexVertexArray;
@@ -15,19 +16,29 @@ import com.bulletphysics.dynamics.RigidBodyConstructionInfo;
 import com.bulletphysics.dynamics.constraintsolver.SequentialImpulseConstraintSolver;
 import com.bulletphysics.linearmath.DefaultMotionState;
 import com.bulletphysics.linearmath.Transform;
+import com.example.voxelrt.Blocks;
 import com.example.voxelrt.Chunk;
 import com.example.voxelrt.ChunkPos;
 import com.example.voxelrt.mesh.MeshBuilder;
 
+import javax.vecmath.Quat4f;
 import javax.vecmath.Vector3f;
+import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Random;
+import java.util.Set;
 
 /**
  * Thin wrapper around the Bullet discrete dynamics world that translates chunk meshes into triangle
@@ -35,6 +46,10 @@ import java.util.Objects;
  */
 public final class PhysicsSystem implements AutoCloseable {
     private static final int FLOATS_PER_INSTANCE = 9;
+    private static final float DEBRIS_SIZE = 0.35f;
+    private static final float DEBRIS_MASS = 0.35f;
+    private static final float DEBRIS_LIFETIME = 6.0f;
+    private static final int MAX_DEBRIS = 128;
 
     private final CollisionConfiguration collisionConfig;
     private final CollisionDispatcher dispatcher;
@@ -42,6 +57,10 @@ public final class PhysicsSystem implements AutoCloseable {
     private final SequentialImpulseConstraintSolver solver;
     private final DiscreteDynamicsWorld world;
     private final Map<ChunkPos, StaticChunkBody> staticChunks = new HashMap<>();
+    private final Set<ChunkPos> dirtyChunkColliders = new HashSet<>();
+    private final ArrayDeque<VoxelDebris> debris = new ArrayDeque<>();
+    private final CollisionShape debrisShape;
+    private final Random random = new Random();
 
     public PhysicsSystem() {
         this(new Vector3f(0f, -9.81f, 0f));
@@ -55,6 +74,7 @@ public final class PhysicsSystem implements AutoCloseable {
         this.world = new DiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfig);
         this.world.setGravity(new Vector3f(gravity));
         this.world.getPairCache().setInternalGhostPairCallback(new GhostPairCallback());
+        this.debrisShape = new BoxShape(new Vector3f(DEBRIS_SIZE * 0.5f, DEBRIS_SIZE * 0.5f, DEBRIS_SIZE * 0.5f));
     }
 
     public DiscreteDynamicsWorld world() {
@@ -66,12 +86,28 @@ public final class PhysicsSystem implements AutoCloseable {
             return;
         }
         world.stepSimulation(dtSeconds, 4, dtSeconds / 4f);
+        if (!debris.isEmpty()) {
+            java.util.Iterator<VoxelDebris> it = debris.iterator();
+            while (it.hasNext()) {
+                VoxelDebris piece = it.next();
+                piece.age += dtSeconds;
+                if (piece.age >= DEBRIS_LIFETIME) {
+                    world.removeRigidBody(piece.body);
+                    it.remove();
+                }
+            }
+        }
     }
 
     public void updateStaticChunkCollider(Chunk chunk, MeshBuilder.MeshData meshData) {
         Objects.requireNonNull(chunk, "chunk");
         ChunkPos pos = chunk.pos();
         if (pos == null) {
+            return;
+        }
+        boolean missing = !staticChunks.containsKey(pos);
+        boolean dirty = dirtyChunkColliders.remove(pos);
+        if (!missing && !dirty && meshData != null && meshData.instanceCount() > 0) {
             return;
         }
         if (meshData == null || meshData.instanceCount() <= 0) {
@@ -127,6 +163,7 @@ public final class PhysicsSystem implements AutoCloseable {
         if (removed != null) {
             world.removeRigidBody(removed.body);
         }
+        dirtyChunkColliders.remove(pos);
     }
 
     @Override
@@ -135,6 +172,58 @@ public final class PhysicsSystem implements AutoCloseable {
             world.removeRigidBody(body.body);
         }
         staticChunks.clear();
+        for (VoxelDebris piece : debris) {
+            world.removeRigidBody(piece.body);
+        }
+        debris.clear();
+    }
+
+    public void onVoxelEdited(int wx, int wy, int wz, int previousBlock, int newBlock, org.joml.Vector3f impulse) {
+        if (previousBlock == newBlock) {
+            return;
+        }
+        ChunkPos pos = new ChunkPos(java.lang.Math.floorDiv(wx, Chunk.SX), java.lang.Math.floorDiv(wz, Chunk.SZ));
+        markChunkDirty(pos);
+
+        int localX = java.lang.Math.floorMod(wx, Chunk.SX);
+        int localZ = java.lang.Math.floorMod(wz, Chunk.SZ);
+        if (localX == 0) {
+            markChunkDirty(new ChunkPos(pos.cx() - 1, pos.cz()));
+        }
+        if (localX == Chunk.SX - 1) {
+            markChunkDirty(new ChunkPos(pos.cx() + 1, pos.cz()));
+        }
+        if (localZ == 0) {
+            markChunkDirty(new ChunkPos(pos.cx(), pos.cz() - 1));
+        }
+        if (localZ == Chunk.SZ - 1) {
+            markChunkDirty(new ChunkPos(pos.cx(), pos.cz() + 1));
+        }
+
+        if (previousBlock != Blocks.AIR && newBlock == Blocks.AIR) {
+            spawnVoxelDebris(previousBlock, wx, wy, wz, impulse);
+        }
+    }
+
+    public List<DebrisInstance> collectDebrisInstances() {
+        if (debris.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        ArrayList<DebrisInstance> instances = new ArrayList<>(debris.size());
+        Transform transform = new Transform();
+        for (VoxelDebris piece : debris) {
+            piece.body.getMotionState().getWorldTransform(transform);
+            Matrix4f matrix = toMatrix(transform);
+            float alpha = java.lang.Math.max(0f, 1f - (piece.age / DEBRIS_LIFETIME));
+            instances.add(new DebrisInstance(matrix, piece.blockId, alpha));
+        }
+        return instances;
+    }
+
+    public void markChunkDirty(ChunkPos pos) {
+        if (pos != null) {
+            dirtyChunkColliders.add(pos);
+        }
     }
 
     private TriangleMeshBuffers buildTriangleMesh(float[] instances, int instanceCount) {
@@ -205,6 +294,61 @@ public final class PhysicsSystem implements AutoCloseable {
         return buffers;
     }
 
+    private void spawnVoxelDebris(int blockId, int wx, int wy, int wz, org.joml.Vector3f impulse) {
+        if (blockId == Blocks.AIR) {
+            return;
+        }
+        Transform transform = new Transform();
+        transform.setIdentity();
+        float jitterX = (random.nextFloat() - 0.5f) * 0.1f;
+        float jitterY = (random.nextFloat() - 0.5f) * 0.1f;
+        float jitterZ = (random.nextFloat() - 0.5f) * 0.1f;
+        transform.origin.set(wx + 0.5f + jitterX, wy + 0.5f + jitterY, wz + 0.5f + jitterZ);
+        DefaultMotionState motionState = new DefaultMotionState(transform);
+        Vector3f inertia = new Vector3f();
+        debrisShape.calculateLocalInertia(DEBRIS_MASS, inertia);
+        RigidBodyConstructionInfo info = new RigidBodyConstructionInfo(DEBRIS_MASS, motionState, debrisShape, inertia);
+        info.restitution = 0.2f;
+        info.friction = 0.7f;
+        RigidBody body = new RigidBody(info);
+        body.setDamping(0.05f, 0.25f);
+
+        javax.vecmath.Vector3f impulseVec;
+        if (impulse != null) {
+            impulseVec = new javax.vecmath.Vector3f(impulse.x, impulse.y, impulse.z);
+        } else {
+            impulseVec = new javax.vecmath.Vector3f(
+                    (random.nextFloat() - 0.5f) * 1.5f,
+                    random.nextFloat() * 2.0f + 0.5f,
+                    (random.nextFloat() - 0.5f) * 1.5f
+            );
+        }
+        body.applyCentralImpulse(impulseVec);
+        body.setAngularVelocity(new javax.vecmath.Vector3f(
+                (random.nextFloat() - 0.5f) * 6.0f,
+                (random.nextFloat() - 0.5f) * 6.0f,
+                (random.nextFloat() - 0.5f) * 6.0f
+        ));
+        world.addRigidBody(body);
+
+        VoxelDebris piece = new VoxelDebris(body, blockId);
+        debris.addLast(piece);
+        while (debris.size() > MAX_DEBRIS) {
+            VoxelDebris removed = debris.removeFirst();
+            world.removeRigidBody(removed.body);
+        }
+    }
+
+    private Matrix4f toMatrix(Transform transform) {
+        Quat4f rotation = new Quat4f();
+        transform.getRotation(rotation);
+        Quaternionf q = new Quaternionf(rotation.x, rotation.y, rotation.z, rotation.w);
+        return new Matrix4f()
+                .translation(transform.origin.x, transform.origin.y, transform.origin.z)
+                .rotate(q)
+                .scale(DEBRIS_SIZE);
+    }
+
     private static int emitAxisX(float[] vertices, int cursor, float x, float minY, float minZ, float maxY, float maxZ) {
         float y0 = minY;
         float y1 = maxY;
@@ -265,6 +409,20 @@ public final class PhysicsSystem implements AutoCloseable {
             this.body = body;
             this.buffers = buffers;
         }
+    }
+
+    private static final class VoxelDebris {
+        final RigidBody body;
+        final int blockId;
+        float age = 0f;
+
+        VoxelDebris(RigidBody body, int blockId) {
+            this.body = body;
+            this.blockId = blockId;
+        }
+    }
+
+    public record DebrisInstance(Matrix4f transform, int blockId, float alpha) {
     }
 
     private static final class TriangleMeshBuffers {

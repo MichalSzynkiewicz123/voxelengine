@@ -33,6 +33,17 @@ public final class Blocks {
      */
     public static final int SNOW = 5;
 
+    public static org.joml.Vector3f color(int id) {
+        return switch (id) {
+            case GRASS -> new org.joml.Vector3f(0.32f, 0.55f, 0.18f);
+            case DIRT -> new org.joml.Vector3f(0.38f, 0.27f, 0.17f);
+            case STONE -> new org.joml.Vector3f(0.50f, 0.50f, 0.50f);
+            case SAND -> new org.joml.Vector3f(0.82f, 0.75f, 0.52f);
+            case SNOW -> new org.joml.Vector3f(0.90f, 0.92f, 0.95f);
+            default -> new org.joml.Vector3f();
+        };
+    }
+
     private Blocks() {
         // Utility class – prevent instantiation.
     }
