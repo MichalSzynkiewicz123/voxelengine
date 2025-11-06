@@ -202,6 +202,28 @@ public class ChunkManager {
         }
     }
 
+    public int loadedChunkCount() {
+        synchronized (lock) {
+            return map.size();
+        }
+    }
+
+    public int maxLoadedChunks() {
+        return maxLoaded;
+    }
+
+    public int pendingGenerationCount() {
+        return pending.size();
+    }
+
+    public int completedGenerationCount() {
+        return completed.size();
+    }
+
+    public int chunkPoolSize() {
+        return chunkPool.size();
+    }
+
     public void requestChunk(ChunkPos pos) {
         update(REQUEST_INTEGRATION_BUDGET);
         boolean alreadyLoaded;

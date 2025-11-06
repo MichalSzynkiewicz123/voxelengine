@@ -277,6 +277,18 @@ public final class PhysicsSystem implements AutoCloseable {
         return instances;
     }
 
+    public int dynamicBodyCount() {
+        return dynamicBodies.size();
+    }
+
+    public int debrisCount() {
+        return debris.size();
+    }
+
+    public int staticChunkBodyCount() {
+        return staticChunks.size();
+    }
+
     private void detachFloatingClusters(ChunkPos pos, org.joml.Vector3f impulse) {
         if (chunkManager == null) {
             return;
