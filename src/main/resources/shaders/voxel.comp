@@ -46,6 +46,11 @@ uniform int   uGIEnabled;
 uniform int   uGISampleCount;
 uniform float uGIMaxDistance;
 uniform float uGIIntensity;
+uniform int   uGIVolumeEnabled;
+uniform sampler3D uGIVolume;
+uniform ivec3 uGIVolumeSize;
+uniform vec3  uGIVolumeOrigin;
+uniform float uGIVolumeCellSize;
 uniform int   uSecondaryTraceMaxSteps;
 
 uniform int   uAOEnabled;
@@ -523,8 +528,54 @@ vec3 computeDirectLighting(vec3 albedo, vec3 pHit, vec3 n){
     return result;
 }
 
-vec3 computeIndirectGI(vec3 albedo, vec3 pHit, vec3 n){
-    if (uGIEnabled == 0) return vec3(0.0);
+vec3 sampleGIVolume(vec3 worldPos){
+    if (uGIVolumeEnabled == 0) return vec3(0.0);
+    vec3 size = vec3(uGIVolumeSize);
+    if (size.x <= 0.0 || size.y <= 0.0 || size.z <= 0.0) return vec3(0.0);
+    float cellSize = max(uGIVolumeCellSize, 1e-4);
+    vec3 coord = (worldPos - uGIVolumeOrigin) / cellSize;
+    vec3 uvw = (coord + vec3(0.5)) / size;
+    if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return vec3(0.0);
+    return texture(uGIVolume, uvw).rgb;
+}
+
+vec3 computeVolumeGI(vec3 albedo, vec3 pHit, vec3 n){
+    if (uGIVolumeEnabled == 0) return vec3(0.0);
+    vec3 worldPos = pHit + vec3(uRegionOrigin);
+    vec3 sum = vec3(0.0);
+    float weightSum = 0.0;
+
+    vec3 baseSample = sampleGIVolume(worldPos);
+    if (any(greaterThan(baseSample, vec3(1e-5)))){
+        sum += baseSample * 0.35;
+        weightSum += 0.35;
+    }
+
+    vec3 T, B; makeONB(n, T, B);
+    int cones = clamp(uGISampleCount, 1, 6);
+    float stepSize = max(uGIVolumeCellSize, 1e-3);
+    for (int i=0; i<cones; ++i){
+        vec3 dir;
+        if (i == 0) dir = n;
+        else if (i == 1) dir = normalize(n + T);
+        else if (i == 2) dir = normalize(n - T);
+        else if (i == 3) dir = normalize(n + B);
+        else if (i == 4) dir = normalize(n - B);
+        else dir = normalize(n + T + B);
+        float distance = stepSize * (1.0 + float(i) * 0.75);
+        vec3 samplePos = worldPos + dir * distance;
+        vec3 sampleValue = sampleGIVolume(samplePos);
+        float weight = max(dot(n, dir), 0.0);
+        if (weight <= 1e-4) continue;
+        sum += sampleValue * weight;
+        weightSum += weight;
+    }
+
+    if (weightSum <= 1e-4) return vec3(0.0);
+    return albedo * (sum / weightSum) * uGIIntensity;
+}
+
+vec3 computeIndirectGIPathTrace(vec3 albedo, vec3 pHit, vec3 n){
     int samples = clamp(uGISampleCount, 0, MAX_GI_SAMPLES);
     if (samples <= 0) return vec3(0.0);
 
@@ -561,6 +612,16 @@ vec3 computeIndirectGI(vec3 albedo, vec3 pHit, vec3 n){
 
     if (weightSum > 0.0) sum /= weightSum;
     return albedo * sum * uGIIntensity;
+}
+
+vec3 computeIndirectGI(vec3 albedo, vec3 pHit, vec3 n){
+    if (uGIEnabled == 0) return vec3(0.0);
+    if (uGIVolumeEnabled != 0){
+        vec3 volumeGi = computeVolumeGI(albedo, pHit, n);
+        float peak = max(max(volumeGi.r, volumeGi.g), volumeGi.b);
+        if (peak > 1e-4) return volumeGi;
+    }
+    return computeIndirectGIPathTrace(albedo, pHit, n);
 }
 
 vec3 computeReflections(uint blockId, vec3 albedo, vec3 pHit, vec3 n, vec3 viewDir){

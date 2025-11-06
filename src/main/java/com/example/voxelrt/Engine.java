@@ -7,9 +7,11 @@ import com.example.voxelrt.physics.PhysicsSystem;
 import com.example.voxelrt.physics.VoxelDebrisRenderer;
 import com.example.voxelrt.render.DynamicLight;
 import com.example.voxelrt.render.LightManager;
+import com.example.voxelrt.render.LightPropagationVolume;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
+import org.joml.Vector3fc;
 import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
@@ -85,6 +87,11 @@ public class Engine {
     private final int[] locComputeLightPositions = new int[MAX_DYNAMIC_LIGHTS];
     private final int[] locComputeLightColors = new int[MAX_DYNAMIC_LIGHTS];
     private final int[] locComputeLightRadii = new int[MAX_DYNAMIC_LIGHTS];
+    private int locComputeGIVolumeEnabled = -1;
+    private int locComputeGIVolumeTex = -1;
+    private int locComputeGIVolumeOrigin = -1;
+    private int locComputeGIVolumeSize = -1;
+    private int locComputeGIVolumeCellSize = -1;
     private int locQuadTex = -1;
     private int locQuadScreenSize = -1;
     private int locQuadPresentTest = -1;
@@ -101,6 +108,8 @@ public class Engine {
     private int ssboVoxelsFar;
     private ChunkBatcher chunkBatcher;
     private VoxelDebrisRenderer debrisRenderer;
+    private LightPropagationVolume giVolume;
+    private int giVolumeTexture = 0;
 
     private Camera camera = new Camera(new Vector3f(64, 120, 64));
     private boolean mouseCaptured = true;
@@ -431,6 +440,7 @@ public class Engine {
         camera.position.set(spawnX + 0.5f, topY + 2.5f, spawnZ + 0.5f);
 
         region = new ActiveRegion(chunkManager, 128, 128, 128);
+        giVolume = new LightPropagationVolume(4);
         int rw = Math.max(1, (int) (width * resolutionScale));
         int rh = Math.max(1, (int) (height * resolutionScale));
         Matrix4f proj = new Matrix4f().perspective((float) Math.toRadians(75.0), (float) rw / rh, 0.1f, 800.0f);
@@ -539,6 +549,11 @@ public class Engine {
         locComputeLightSoftSamples = glGetUniformLocation(computeProgram, "uLightSoftSamples");
         locComputeShadowTraceMaxSteps = glGetUniformLocation(computeProgram, "uShadowTraceMaxSteps");
         locComputeShadowOccupancyScale = glGetUniformLocation(computeProgram, "uShadowOccupancyScale");
+        locComputeGIVolumeEnabled = glGetUniformLocation(computeProgram, "uGIVolumeEnabled");
+        locComputeGIVolumeTex = glGetUniformLocation(computeProgram, "uGIVolume");
+        locComputeGIVolumeOrigin = glGetUniformLocation(computeProgram, "uGIVolumeOrigin");
+        locComputeGIVolumeSize = glGetUniformLocation(computeProgram, "uGIVolumeSize");
+        locComputeGIVolumeCellSize = glGetUniformLocation(computeProgram, "uGIVolumeCellSize");
         for (int i = 0; i < MAX_DYNAMIC_LIGHTS; i++) {
             locComputeLightPositions[i] = glGetUniformLocation(computeProgram, "uLightPositions[" + i + "]");
             locComputeLightColors[i] = glGetUniformLocation(computeProgram, "uLightColors[" + i + "]");
@@ -624,7 +639,6 @@ public class Engine {
     }
 
     private void uploadDynamicLights() {
-        lightManager.gatherActiveLights(camera.position, MAX_DYNAMIC_LIGHTS, activeLightsScratch);
         int count = activeLightsScratch.size();
         if (locComputeLightCount >= 0) {
             glUniform1i(locComputeLightCount, count);
@@ -658,6 +672,46 @@ public class Engine {
                 glUniform1f(locComputeLightRadii[i], radius);
             }
         }
+    }
+
+    private void updateGlobalIlluminationVolume(Vector3f sunDir) {
+        if (!enableGI || giVolume == null || region == null) {
+            return;
+        }
+        giVolume.rebuild(region, sunDir, activeLightsScratch);
+        if (!giVolume.isDirty()) {
+            return;
+        }
+        ensureGiVolumeTexture();
+        int sx = giVolume.sizeX();
+        int sy = giVolume.sizeY();
+        int sz = giVolume.sizeZ();
+        if (sx <= 0 || sy <= 0 || sz <= 0) {
+            giVolume.clearDirtyFlag();
+            return;
+        }
+        glBindTexture(GL_TEXTURE_3D, giVolumeTexture);
+        FloatBuffer buffer = giVolume.uploadBuffer();
+        if (buffer != null) {
+            glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB16F, sx, sy, sz, 0, GL_RGB, GL_FLOAT, buffer);
+            glGenerateMipmap(GL_TEXTURE_3D);
+        }
+        glBindTexture(GL_TEXTURE_3D, 0);
+        giVolume.clearDirtyFlag();
+    }
+
+    private void ensureGiVolumeTexture() {
+        if (giVolumeTexture != 0) {
+            return;
+        }
+        giVolumeTexture = glGenTextures();
+        glBindTexture(GL_TEXTURE_3D, giVolumeTexture);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_3D, 0);
     }
 
     private void rebuildChunkMeshes(java.util.List<Chunk> chunks) {
@@ -864,6 +918,10 @@ public class Engine {
             java.util.List<Chunk> visibleChunks = filterVisibleChunks(loadedChunks, frustum);
 
             updateDynamicLights(now, dt);
+            lightManager.gatherActiveLights(camera.position, MAX_DYNAMIC_LIGHTS, activeLightsScratch);
+
+            Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
+            updateGlobalIlluminationVolume(sunDir);
 
             if (physicsSystem != null) {
                 physicsSystem.stepSimulation(dt);
@@ -891,6 +949,31 @@ public class Engine {
                 if (locComputeGISampleCount >= 0) glUniform1i(locComputeGISampleCount, giSampleCount);
                 if (locComputeGIMaxDistance >= 0) glUniform1f(locComputeGIMaxDistance, giMaxDistance);
                 if (locComputeGIIntensity >= 0) glUniform1f(locComputeGIIntensity, giIntensity);
+                boolean giVolumeAvailable = enableGI && giVolumeTexture != 0 && giVolume != null
+                        && giVolume.sizeX() > 0 && giVolume.sizeY() > 0 && giVolume.sizeZ() > 0;
+                if (locComputeGIVolumeEnabled >= 0) {
+                    glUniform1i(locComputeGIVolumeEnabled, giVolumeAvailable ? 1 : 0);
+                }
+                if (locComputeGIVolumeTex >= 0) {
+                    glUniform1i(locComputeGIVolumeTex, 3);
+                }
+                if (giVolumeAvailable) {
+                    if (locComputeGIVolumeOrigin >= 0) {
+                        Vector3fc origin = giVolume.origin();
+                        glUniform3f(locComputeGIVolumeOrigin, origin.x(), origin.y(), origin.z());
+                    }
+                    if (locComputeGIVolumeSize >= 0) {
+                        glUniform3i(locComputeGIVolumeSize, giVolume.sizeX(), giVolume.sizeY(), giVolume.sizeZ());
+                    }
+                    if (locComputeGIVolumeCellSize >= 0) {
+                        glUniform1f(locComputeGIVolumeCellSize, giVolume.cellSize());
+                    }
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_3D, giVolumeTexture);
+                } else {
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_3D, 0);
+                }
                 if (locComputeSecondaryTraceMaxSteps >= 0)
                     glUniform1i(locComputeSecondaryTraceMaxSteps, secondaryTraceMaxSteps);
                 if (locComputeAOEnabled >= 0) glUniform1i(locComputeAOEnabled, enableAO ? 1 : 0);
@@ -931,7 +1014,6 @@ public class Engine {
                     glUniform1f(locComputeLodTransitionBand, lodTransitionBand);
                 if (locComputeCamPos >= 0)
                     glUniform3f(locComputeCamPos, camera.position.x, camera.position.y, camera.position.z);
-                Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
                 if (locComputeSunDir >= 0) glUniform3f(locComputeSunDir, sunDir.x, sunDir.y, sunDir.z);
                 if (locComputeResolution >= 0) glUniform2i(locComputeResolution, rw, rh);
                 if (locComputeDebugGradient >= 0) glUniform1i(locComputeDebugGradient, debugGradient ? 1 : 0);
@@ -942,6 +1024,9 @@ public class Engine {
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
                 int gx = (rw + 15) / 16, gy = (rh + 15) / 16;
                 glDispatchCompute(gx, gy, 1);
+                glActiveTexture(GL_TEXTURE3);
+                glBindTexture(GL_TEXTURE_3D, 0);
+                glActiveTexture(GL_TEXTURE0);
                 glUseProgram(0);
                 glMemoryBarrier(GL_ALL_BARRIER_BITS);
             }
@@ -1196,6 +1281,9 @@ public class Engine {
         glDeleteProgram(quadProgram);
         glDeleteProgram(meshProgram);
         glDeleteProgram(debrisProgram);
+        if (giVolumeTexture != 0) {
+            glDeleteTextures(giVolumeTexture);
+        }
         glDeleteTextures(outputTex);
         glDeleteVertexArrays(vaoQuad);
         if (chunkBatcher != null) {

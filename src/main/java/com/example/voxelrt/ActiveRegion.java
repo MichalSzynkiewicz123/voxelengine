@@ -327,6 +327,17 @@ public class ActiveRegion {
         return lodScaleFar;
     }
 
+    public boolean containsLocal(int x, int y, int z) {
+        return x >= 0 && y >= 0 && z >= 0 && x < rx && y < ry && z < rz;
+    }
+
+    public int getLocal(int x, int y, int z) {
+        if (!containsLocal(x, y, z)) {
+            return Blocks.AIR;
+        }
+        return buf[ridx(x, y, z)];
+    }
+
     private void uploadAll() {
         if (ssbo == 0) ssbo = glGenBuffers();
         uploadIntBuffer.clear();
