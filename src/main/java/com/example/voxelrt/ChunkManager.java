@@ -1,5 +1,6 @@
 package com.example.voxelrt;
 
+import com.example.voxelrt.ChunkCompression.CompressedChunkData;
 import com.example.voxelrt.svo.SparseVoxelOctree;
 
 import java.util.ArrayList;
@@ -31,7 +32,8 @@ public class ChunkManager {
     private static final String THREAD_COUNT_ENV = "VOXEL_CHUNK_THREADS";
     private static final int REQUEST_INTEGRATION_BUDGET = 2;
     private static final int DEFAULT_SPARSE_SNAPSHOT_COUNT = DEFAULT_CACHE_SIZE * 2;
-    private static final int CHUNK_VOXEL_COUNT = Chunk.SX * Chunk.SY * Chunk.SZ;
+    private static final int DEFAULT_COMPRESSED_SNAPSHOT_COUNT = DEFAULT_CACHE_SIZE * 2;
+    private static final int CHUNK_VOXEL_COUNT = Chunk.TOTAL_VOXELS;
     private final WorldGenerator gen;
     private final Map<ChunkPos, Chunk> map = new HashMap<>();
     private final LinkedHashMap<ChunkPos, Chunk> lru = new LinkedHashMap<>(64, 0.75f, true);
@@ -49,6 +51,9 @@ public class ChunkManager {
     private final LinkedHashMap<ChunkPos, SparseVoxelOctree> sparseCache = new LinkedHashMap<>(64, 0.75f, true);
     private final Object sparseLock = new Object();
     private volatile int maxSparseSnapshots = DEFAULT_SPARSE_SNAPSHOT_COUNT;
+    private final LinkedHashMap<ChunkPos, CompressedChunkData> compressedCache = new LinkedHashMap<>(64, 0.75f, true);
+    private final Object compressedLock = new Object();
+    private volatile int maxCompressedSnapshots = DEFAULT_COMPRESSED_SNAPSHOT_COUNT;
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this(g, maxLoaded, null);
@@ -58,6 +63,7 @@ public class ChunkManager {
         this.gen = g;
         this.maxLoaded = sanitizeMaxLoaded(maxLoaded);
         this.maxSparseSnapshots = java.lang.Math.max(DEFAULT_SPARSE_SNAPSHOT_COUNT, this.maxLoaded * 2);
+        this.maxCompressedSnapshots = java.lang.Math.max(DEFAULT_COMPRESSED_SNAPSHOT_COUNT, this.maxLoaded * 2);
         this.storage = storage;
         int threads = resolveThreadCount();
         this.jobSystem = new JobSystem("ChunkGen-", threads);
@@ -94,6 +100,9 @@ public class ChunkManager {
             if (storage != null) {
                 diskLoadedChunks.remove(chunkPos);
             }
+            synchronized (compressedLock) {
+                compressedCache.remove(chunkPos);
+            }
         }
         invalidateSparseCacheEntry(chunkPos);
         Chunk c = getIfLoaded(chunkPos);
@@ -126,9 +135,14 @@ public class ChunkManager {
             }
         }
 
-        Chunk restored = restoreChunkFromSparse(p);
+        Chunk restored = restoreChunkFromCompressed(p);
         if (restored != null) {
             return restored;
+        }
+
+        Chunk restoredSparse = restoreChunkFromSparse(p);
+        if (restoredSparse != null) {
+            return restoredSparse;
         }
 
         synchronized (lock) {
@@ -198,7 +212,7 @@ public class ChunkManager {
             }
         }
         if (!alreadyLoaded) {
-            if (restoreChunkFromSparse(pos) == null) {
+            if (restoreChunkFromCompressed(pos) == null && restoreChunkFromSparse(pos) == null) {
                 synchronized (lock) {
                     Chunk cached = map.get(pos);
                     if (cached != null) {
@@ -256,12 +270,17 @@ public class ChunkManager {
         if (storage == null) {
             return;
         }
-        List<ChunkPos> positions;
+        List<ChunkSnapshot> snapshots;
         synchronized (lock) {
-            positions = new ArrayList<>(map.keySet());
+            snapshots = new ArrayList<>(map.size());
+            for (Map.Entry<ChunkPos, Chunk> entry : map.entrySet()) {
+                snapshots.add(new ChunkSnapshot(entry.getKey(), entry.getValue()));
+            }
         }
-        for (ChunkPos pos : positions) {
-            storage.saveChunkEditsAsync(pos, gatherEditsForChunk(pos));
+        for (ChunkSnapshot snapshot : snapshots) {
+            storage.saveChunkEditsAsync(snapshot.pos(), gatherEditsForChunk(snapshot.pos()));
+            CompressedChunkData compressed = ChunkCompression.compress(snapshot.chunk().captureDenseData());
+            storage.saveChunkDataAsync(snapshot.pos(), compressed);
         }
         storage.waitForPendingSaves();
     }
@@ -275,7 +294,9 @@ public class ChunkManager {
             }
         }
         maxSparseSnapshots = java.lang.Math.max(DEFAULT_SPARSE_SNAPSHOT_COUNT, sanitized * 2);
+        maxCompressedSnapshots = java.lang.Math.max(DEFAULT_COMPRESSED_SNAPSHOT_COUNT, sanitized * 2);
         trimSparseCache();
+        trimCompressedCache();
     }
 
     public int getMaxLoaded() {
@@ -463,7 +484,10 @@ public class ChunkManager {
     }
 
     private void evictChunkLocked(ChunkPos pos, Chunk chunk) {
+        CompressedChunkData compressed = ChunkCompression.compress(chunk.captureDenseData());
+        storeCompressedSnapshot(pos, compressed);
         if (storage != null) {
+            storage.saveChunkDataAsync(pos, compressed);
             storage.saveChunkEditsAsync(pos, gatherEditsForChunk(pos));
             synchronized (editLock) {
                 diskLoadedChunks.remove(pos);
@@ -495,6 +519,39 @@ public class ChunkManager {
         synchronized (sparseLock) {
             sparseCache.remove(pos);
         }
+    }
+
+    private Chunk restoreChunkFromCompressed(ChunkPos pos) {
+        CompressedChunkData snapshot;
+        synchronized (compressedLock) {
+            snapshot = compressedCache.remove(pos);
+        }
+        if (snapshot == null && storage != null) {
+            snapshot = storage.loadChunkData(pos);
+        }
+        if (snapshot == null) {
+            return null;
+        }
+        if (snapshot.uncompressedSize() != Chunk.TOTAL_VOXELS) {
+            System.err.println("[ChunkManager] Ignoring chunk data for " + pos + " due to unexpected payload size " + snapshot.uncompressedSize());
+            return null;
+        }
+        if (snapshot.allAir()) {
+            return integrateEmptyChunk(pos);
+        }
+        byte[] dense = ChunkCompression.decompress(snapshot);
+        Chunk chunk = obtainChunk(pos);
+        chunk.applyDenseData(dense);
+        applyEdits(chunk);
+        chunk.markMeshDirty();
+        synchronized (lock) {
+            map.put(pos, chunk);
+            lru.put(pos, chunk);
+            markNeighborsDirty(pos);
+            trimToMaxLocked();
+        }
+        integratedSinceLastPoll.set(true);
+        return chunk;
     }
 
     private Chunk restoreChunkFromSparse(ChunkPos pos) {
@@ -570,6 +627,30 @@ public class ChunkManager {
         }
     }
 
+    private void storeCompressedSnapshot(ChunkPos pos, CompressedChunkData data) {
+        synchronized (compressedLock) {
+            compressedCache.put(pos, data);
+            trimCompressedCacheLocked();
+        }
+    }
+
+    private void trimCompressedCache() {
+        synchronized (compressedLock) {
+            trimCompressedCacheLocked();
+        }
+    }
+
+    private void trimCompressedCacheLocked() {
+        while (compressedCache.size() > maxCompressedSnapshots) {
+            Iterator<Map.Entry<ChunkPos, CompressedChunkData>> it = compressedCache.entrySet().iterator();
+            if (!it.hasNext()) {
+                break;
+            }
+            it.next();
+            it.remove();
+        }
+    }
+
     public void unloadOutsideRadius(ChunkPos center, int radius) {
         if (radius < 0) {
             return;
@@ -619,5 +700,8 @@ public class ChunkManager {
             this.pos = pos;
             this.chunk = chunk;
         }
+    }
+
+    private record ChunkSnapshot(ChunkPos pos, Chunk chunk) {
     }
 }
