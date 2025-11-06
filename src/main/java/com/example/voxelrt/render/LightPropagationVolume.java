@@ -110,7 +110,7 @@ public final class LightPropagationVolume {
                 for (int cx = 0; cx < sizeX; cx++) {
                     int cellIndex = index(cx, cy, cz);
                     int base = cellIndex * 3;
-                    int solidCount = 0;
+                    float occlusionSum = 0f;
                     int sampleCount = 0;
                     float r = 0f, g = 0f, b = 0f;
 
@@ -134,7 +134,8 @@ public final class LightPropagationVolume {
                                 if (blockId == Blocks.AIR) {
                                     continue;
                                 }
-                                solidCount++;
+                                float opacity = Blocks.giOpacity(blockId);
+                                occlusionSum += opacity;
                                 float[] color = blockColor(blockId);
                                 for (int[] normal : FACE_NORMALS) {
                                     int nx = vx + normal[0];
@@ -164,7 +165,7 @@ public final class LightPropagationVolume {
 
                     float occupancyRatio = sampleCount == 0
                             ? 0f
-                            : (float) solidCount / (float) sampleCount;
+                            : occlusionSum / (float) sampleCount;
                     occupancy[cellIndex] = Math.min(1f, Math.max(0f, occupancyRatio));
                     float openness = 1f - occupancy[cellIndex];
                     if (openness <= 0f) {

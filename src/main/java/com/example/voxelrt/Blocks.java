@@ -59,6 +59,19 @@ public final class Blocks {
         };
     }
 
+    /**
+     * Opacity used by the global illumination system when determining how much a block occludes
+     * light within a propagation cell. 0 means the voxel is fully transparent, 1 means it is
+     * completely opaque.
+     */
+    public static float giOpacity(int id) {
+        return switch (id) {
+            case AIR -> 0f;
+            case LEAVES -> 0.15f;
+            default -> 1f;
+        };
+    }
+
     private Blocks() {
         // Utility class – prevent instantiation.
     }
