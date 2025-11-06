@@ -83,6 +83,7 @@ public class Engine {
     private int locQuadPresentTest = -1;
     private int locMeshProj = -1;
     private int locMeshView = -1;
+    private int locMeshModel = -1;
     private int locMeshSunDir = -1;
     private int locDebrisProj = -1;
     private int locDebrisView = -1;
@@ -401,7 +402,6 @@ public class Engine {
         int chunkCacheSize = determineChunkCacheSize();
         chunkManager = new ChunkManager(generator, chunkCacheSize);
         System.out.println("[Engine] Chunk cache capacity set to " + chunkManager.getMaxLoaded() + " chunks");
-        physicsSystem = new PhysicsSystem();
 
         // Spawn above ground
         int spawnX = (int) Math.floor(camera.position.x);
@@ -427,6 +427,7 @@ public class Engine {
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
         ssboVoxelsFar = region.ssboFar();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
+        physicsSystem = new PhysicsSystem(chunkManager, region);
         resetPrefetchBounds();
         lastPrefetchPosition.set(camera.position);
     }
@@ -528,6 +529,7 @@ public class Engine {
     private void cacheMeshUniformLocations() {
         locMeshProj = glGetUniformLocation(meshProgram, "uProj");
         locMeshView = glGetUniformLocation(meshProgram, "uView");
+        locMeshModel = glGetUniformLocation(meshProgram, "uModel");
         locMeshSunDir = glGetUniformLocation(meshProgram, "uSunDir");
     }
 
@@ -647,6 +649,8 @@ public class Engine {
         glUseProgram(meshProgram);
         uploadMatrix(locMeshProj, proj);
         uploadMatrix(locMeshView, view);
+        Matrix4f identityModel = new Matrix4f();
+        uploadMatrix(locMeshModel, identityModel);
         Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
         if (locMeshSunDir >= 0) {
             glUniform3f(locMeshSunDir, sunDir.x, sunDir.y, sunDir.z);
@@ -660,6 +664,19 @@ public class Engine {
         }
         if (!drawList.isEmpty() && chunkBatcher != null) {
             chunkBatcher.drawBatched(drawList);
+        }
+        if (physicsSystem != null) {
+            java.util.List<PhysicsSystem.DynamicBodyInstance> bodies = physicsSystem.collectDynamicBodies();
+            if (!bodies.isEmpty()) {
+                for (PhysicsSystem.DynamicBodyInstance body : bodies) {
+                    uploadMatrix(locMeshModel, body.transform());
+                    ChunkMesh mesh = body.mesh();
+                    if (mesh != null) {
+                        mesh.draw();
+                    }
+                }
+                uploadMatrix(locMeshModel, identityModel);
+            }
         }
         glUseProgram(0);
     }

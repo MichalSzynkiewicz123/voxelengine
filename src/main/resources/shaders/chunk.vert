@@ -7,6 +7,7 @@ layout(location = 3) in vec3 iMeta;
 
 uniform mat4 uProj;
 uniform mat4 uView;
+uniform mat4 uModel;
 
 out vec3 vNormal;
 flat out int vBlockId;
@@ -51,7 +52,8 @@ void main() {
         }
     }
 
-    vNormal = normal;
     vec3 worldPos = basePos + aCorner.x * tangentU + aCorner.y * tangentV;
-    gl_Position = uProj * uView * vec4(worldPos, 1.0);
+    vec4 modelPos = uModel * vec4(worldPos, 1.0);
+    vNormal = mat3(uModel) * normal;
+    gl_Position = uProj * uView * modelPos;
 }
