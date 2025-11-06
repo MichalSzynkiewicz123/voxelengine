@@ -71,6 +71,10 @@ public class Engine {
     private int locComputeGIMaxDistance = -1;
     private int locComputeGIIntensity = -1;
     private int locComputeSecondaryTraceMaxSteps = -1;
+    private int locComputeAOEnabled = -1;
+    private int locComputeAOSampleCount = -1;
+    private int locComputeAORadius = -1;
+    private int locComputeAOIntensity = -1;
     private int locComputeReflectionEnabled = -1;
     private int locComputeReflectionMaxDistance = -1;
     private int locComputeReflectionIntensity = -1;
@@ -141,6 +145,10 @@ public class Engine {
     private int giSampleCount = 8;
     private float giMaxDistance = 28f;
     private float giIntensity = 0.45f;
+    private boolean enableAO = true;
+    private int aoSampleCount = 8;
+    private float aoRadius = 3.0f;
+    private float aoIntensity = 1.0f;
     private boolean enableReflections = true;
     private float reflectionMaxDistance = 96f;
     private float reflectionIntensity = 0.6f;
@@ -520,6 +528,10 @@ public class Engine {
         locComputeGIMaxDistance = glGetUniformLocation(computeProgram, "uGIMaxDistance");
         locComputeGIIntensity = glGetUniformLocation(computeProgram, "uGIIntensity");
         locComputeSecondaryTraceMaxSteps = glGetUniformLocation(computeProgram, "uSecondaryTraceMaxSteps");
+        locComputeAOEnabled = glGetUniformLocation(computeProgram, "uAOEnabled");
+        locComputeAOSampleCount = glGetUniformLocation(computeProgram, "uAOSampleCount");
+        locComputeAORadius = glGetUniformLocation(computeProgram, "uAORadius");
+        locComputeAOIntensity = glGetUniformLocation(computeProgram, "uAOIntensity");
         locComputeReflectionEnabled = glGetUniformLocation(computeProgram, "uReflectionEnabled");
         locComputeReflectionMaxDistance = glGetUniformLocation(computeProgram, "uReflectionMaxDistance");
         locComputeReflectionIntensity = glGetUniformLocation(computeProgram, "uReflectionIntensity");
@@ -881,6 +893,10 @@ public class Engine {
                 if (locComputeGIIntensity >= 0) glUniform1f(locComputeGIIntensity, giIntensity);
                 if (locComputeSecondaryTraceMaxSteps >= 0)
                     glUniform1i(locComputeSecondaryTraceMaxSteps, secondaryTraceMaxSteps);
+                if (locComputeAOEnabled >= 0) glUniform1i(locComputeAOEnabled, enableAO ? 1 : 0);
+                if (locComputeAOSampleCount >= 0) glUniform1i(locComputeAOSampleCount, aoSampleCount);
+                if (locComputeAORadius >= 0) glUniform1f(locComputeAORadius, aoRadius);
+                if (locComputeAOIntensity >= 0) glUniform1f(locComputeAOIntensity, aoIntensity);
                 if (locComputeReflectionEnabled >= 0)
                     glUniform1i(locComputeReflectionEnabled, enableReflections ? 1 : 0);
                 if (locComputeReflectionMaxDistance >= 0)
