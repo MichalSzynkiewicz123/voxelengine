@@ -22,6 +22,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ChunkManager {
     public static final int MIN_CACHE_SIZE = 64;
     public static final int DEFAULT_CACHE_SIZE = 256;
+    private static final String THREAD_COUNT_PROPERTY = "voxel.chunkThreads";
+    private static final String THREAD_COUNT_ENV = "VOXEL_CHUNK_THREADS";
+    private static final int REQUEST_INTEGRATION_BUDGET = 2;
     private final WorldGenerator gen;
     private final Map<ChunkPos, Chunk> map = new HashMap<>();
     private final LinkedHashMap<ChunkPos, Chunk> lru = new LinkedHashMap<>(64, 0.75f, true);
@@ -38,7 +41,7 @@ public class ChunkManager {
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this.gen = g;
         this.maxLoaded = sanitizeMaxLoaded(maxLoaded);
-        int threads = java.lang.Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        int threads = resolveThreadCount();
         this.jobSystem = new JobSystem("ChunkGen-", threads);
         System.out.println("[ChunkManager] Job system started with " + threads + " worker thread" + (threads == 1 ? "" : "s"));
     }
@@ -148,7 +151,7 @@ public class ChunkManager {
     }
 
     public void requestChunk(ChunkPos pos) {
-        update();
+        update(REQUEST_INTEGRATION_BUDGET);
         boolean alreadyLoaded;
         synchronized (lock) {
             alreadyLoaded = map.containsKey(pos);
@@ -162,9 +165,21 @@ public class ChunkManager {
     }
 
     public boolean update() {
+        return updateInternal(Integer.MAX_VALUE);
+    }
+
+    public boolean update(int maxIntegrations) {
+        if (maxIntegrations <= 0) {
+            return false;
+        }
+        return updateInternal(maxIntegrations);
+    }
+
+    private boolean updateInternal(int maxIntegrations) {
         boolean changed = false;
         ChunkLoadResult result;
-        while ((result = completed.poll()) != null) {
+        int integrated = 0;
+        while (integrated < maxIntegrations && (result = completed.poll()) != null) {
             applyEdits(result.chunk);
             result.chunk.markMeshDirty();
             synchronized (lock) {
@@ -174,6 +189,7 @@ public class ChunkManager {
                 trimToMaxLocked();
             }
             changed = true;
+            integrated++;
         }
         if (changed) {
             integratedSinceLastPoll.set(true);
@@ -222,6 +238,26 @@ public class ChunkManager {
 
     private static int sanitizeMaxLoaded(int maxLoaded) {
         return java.lang.Math.max(MIN_CACHE_SIZE, maxLoaded);
+    }
+
+    private int resolveThreadCount() {
+        int defaultThreads = java.lang.Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+        String configured = System.getProperty(THREAD_COUNT_PROPERTY);
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv(THREAD_COUNT_ENV);
+        }
+        if (configured != null) {
+            try {
+                int parsed = Integer.parseInt(configured.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+                System.err.println("[ChunkManager] Ignoring non-positive chunk thread override: " + configured);
+            } catch (NumberFormatException ex) {
+                System.err.println("[ChunkManager] Failed to parse chunk thread override '" + configured + "': " + ex.getMessage());
+            }
+        }
+        return defaultThreads;
     }
 
     private void markNeighborsDirty(ChunkPos pos) {

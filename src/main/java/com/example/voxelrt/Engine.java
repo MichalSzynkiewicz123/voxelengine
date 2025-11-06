@@ -137,12 +137,14 @@ public class Engine {
     private static final int PREFETCH_LOOKAHEAD_CHUNKS = 2;
     private static final float PREFETCH_DIRECTION_THRESHOLD = 0.15f;
     private static final int PREFETCH_MARGIN = 48;
+    private static final int REGION_PREFETCH_MARGIN_CHUNKS = PREFETCH_LOOKAHEAD_CHUNKS + 1;
     private static final int MAX_DYNAMIC_LIGHTS = 8;
     private final Vector3f lastPrefetchPosition = new Vector3f();
     private int prefetchedEast = Integer.MIN_VALUE;
     private int prefetchedWest = Integer.MAX_VALUE;
     private int prefetchedSouth = Integer.MIN_VALUE;
     private int prefetchedNorth = Integer.MAX_VALUE;
+    private int chunkIntegrationBudget = 8;
 
     private final LightManager lightManager = new LightManager();
     private final java.util.ArrayList<DynamicLight> activeLightsScratch = new java.util.ArrayList<>(MAX_DYNAMIC_LIGHTS);
@@ -431,6 +433,8 @@ public class Engine {
         generator = new WorldGenerator(1337L, 62);
         int chunkCacheSize = determineChunkCacheSize();
         chunkManager = new ChunkManager(generator, chunkCacheSize);
+        chunkIntegrationBudget = determineChunkIntegrationBudget();
+        System.out.println("[Engine] Chunk integration budget set to " + chunkIntegrationBudget + " per frame");
         System.out.println("[Engine] Chunk cache capacity set to " + chunkManager.getMaxLoaded() + " chunks");
 
         // Spawn above ground
@@ -461,6 +465,7 @@ public class Engine {
         physicsSystem = new PhysicsSystem(chunkManager, region);
         resetPrefetchBounds();
         lastPrefetchPosition.set(camera.position);
+        prefetchActiveRegionPadding();
     }
 
     private int determineChunkCacheSize() {
@@ -501,6 +506,25 @@ public class Engine {
 
         long capped = java.lang.Math.min(Integer.MAX_VALUE, computed);
         return (int) java.lang.Math.max(ChunkManager.MIN_CACHE_SIZE, capped);
+    }
+
+    private int determineChunkIntegrationBudget() {
+        String configured = System.getProperty("voxel.chunksPerFrame");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("VOXEL_CHUNKS_PER_FRAME");
+        }
+        if (configured != null) {
+            try {
+                int parsed = Integer.parseInt(configured.trim());
+                if (parsed > 0) {
+                    return parsed;
+                }
+                System.err.println("[Engine] Ignoring non-positive chunk integration budget override: " + configured);
+            } catch (NumberFormatException ex) {
+                System.err.println("[Engine] Failed to parse chunk integration override '" + configured + "': " + ex.getMessage());
+            }
+        }
+        return 6;
     }
 
     private void cacheComputeUniformLocations() {
@@ -870,7 +894,7 @@ public class Engine {
             pollInput(dt);
             updateLodDistances(dt);
 
-            chunkManager.update();
+            chunkManager.update(chunkIntegrationBudget);
             boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
             java.util.List<Chunk> loadedChunks = chunkManager.snapshotLoadedChunks();
             if (physicsSystem != null) {
@@ -911,6 +935,7 @@ public class Engine {
                 lastRegionPitch = camera.pitchDeg();
                 resetPrefetchBounds();
                 lastPrefetchPosition.set(camera.position);
+                prefetchActiveRegionPadding();
             }
 
             updatePrefetch();
@@ -1183,6 +1208,23 @@ public class Engine {
         prefetchedWest = java.lang.Math.floorDiv(region.originX, Chunk.SX);
         prefetchedSouth = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ);
         prefetchedNorth = java.lang.Math.floorDiv(region.originZ, Chunk.SZ);
+    }
+
+    private void prefetchActiveRegionPadding() {
+        if (region == null || chunkManager == null) {
+            return;
+        }
+        int minChunkX = java.lang.Math.floorDiv(region.originX, Chunk.SX) - REGION_PREFETCH_MARGIN_CHUNKS;
+        int maxChunkX = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX) + REGION_PREFETCH_MARGIN_CHUNKS;
+        int minChunkZ = java.lang.Math.floorDiv(region.originZ, Chunk.SZ) - REGION_PREFETCH_MARGIN_CHUNKS;
+        int maxChunkZ = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ) + REGION_PREFETCH_MARGIN_CHUNKS;
+        for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            requestColumn(chunkX, minChunkZ, maxChunkZ);
+        }
+        prefetchedEast = java.lang.Math.max(prefetchedEast, maxChunkX);
+        prefetchedWest = java.lang.Math.min(prefetchedWest, minChunkX);
+        prefetchedSouth = java.lang.Math.max(prefetchedSouth, maxChunkZ);
+        prefetchedNorth = java.lang.Math.min(prefetchedNorth, minChunkZ);
     }
 
     private void prefetchEast() {
