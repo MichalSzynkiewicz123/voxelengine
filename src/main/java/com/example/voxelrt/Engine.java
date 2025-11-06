@@ -5,6 +5,8 @@ import com.example.voxelrt.mesh.ChunkMesh;
 import com.example.voxelrt.mesh.MeshBuilder;
 import com.example.voxelrt.physics.PhysicsSystem;
 import com.example.voxelrt.physics.VoxelDebrisRenderer;
+import com.example.voxelrt.render.DynamicLight;
+import com.example.voxelrt.render.LightManager;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -78,6 +80,7 @@ public class Engine {
     private int locComputeShadowOccupancyScale = -1;
     private final int[] locComputeLightPositions = new int[MAX_DYNAMIC_LIGHTS];
     private final int[] locComputeLightColors = new int[MAX_DYNAMIC_LIGHTS];
+    private final int[] locComputeLightRadii = new int[MAX_DYNAMIC_LIGHTS];
     private int locQuadTex = -1;
     private int locQuadScreenSize = -1;
     private int locQuadPresentTest = -1;
@@ -121,15 +124,19 @@ public class Engine {
     private static final int PREFETCH_LOOKAHEAD_CHUNKS = 2;
     private static final float PREFETCH_DIRECTION_THRESHOLD = 0.15f;
     private static final int PREFETCH_MARGIN = 48;
-    private static final int MAX_DYNAMIC_LIGHTS = 4;
+    private static final int MAX_DYNAMIC_LIGHTS = 8;
     private final Vector3f lastPrefetchPosition = new Vector3f();
     private int prefetchedEast = Integer.MIN_VALUE;
     private int prefetchedWest = Integer.MAX_VALUE;
     private int prefetchedSouth = Integer.MIN_VALUE;
     private int prefetchedNorth = Integer.MAX_VALUE;
 
-    private final DynamicLight[] dynamicLights = new DynamicLight[MAX_DYNAMIC_LIGHTS];
-    private int activeLightCount = 2;
+    private final LightManager lightManager = new LightManager();
+    private final java.util.ArrayList<DynamicLight> activeLightsScratch = new java.util.ArrayList<>(MAX_DYNAMIC_LIGHTS);
+    private DynamicLight playerTorch;
+    private DynamicLight debugLightA;
+    private DynamicLight debugLightB;
+    private boolean debugLightsEnabled = true;
     private boolean enableGI = true;
     private int giSampleCount = 8;
     private float giMaxDistance = 28f;
@@ -151,6 +158,10 @@ public class Engine {
         initResources();
         loop();
         cleanup();
+    }
+
+    public LightManager lightManager() {
+        return lightManager;
     }
 
     /**
@@ -251,8 +262,10 @@ public class Engine {
                     System.out.println("[DEBUG] reflections=" + enableReflections);
                 }
                 if (key == GLFW_KEY_F8) {
-                    activeLightCount = (activeLightCount == 0) ? java.lang.Math.min(2, dynamicLights.length) : 0;
-                    System.out.println("[DEBUG] dynamicLights=" + activeLightCount);
+                    debugLightsEnabled = !debugLightsEnabled;
+                    if (debugLightA != null) debugLightA.setEnabled(debugLightsEnabled);
+                    if (debugLightB != null) debugLightB.setEnabled(debugLightsEnabled);
+                    System.out.println("[DEBUG] dynamicLights=" + debugLightsEnabled);
                 }
                 if (key == GLFW_KEY_KP_ADD || key == GLFW_KEY_EQUAL) {
                     resolutionScale = Math.min(2.0f, resolutionScale + 0.1f);
@@ -517,6 +530,7 @@ public class Engine {
         for (int i = 0; i < MAX_DYNAMIC_LIGHTS; i++) {
             locComputeLightPositions[i] = glGetUniformLocation(computeProgram, "uLightPositions[" + i + "]");
             locComputeLightColors[i] = glGetUniformLocation(computeProgram, "uLightColors[" + i + "]");
+            locComputeLightRadii[i] = glGetUniformLocation(computeProgram, "uLightRadii[" + i + "]");
         }
     }
 
@@ -540,47 +554,66 @@ public class Engine {
     }
 
     private void initDynamicLights() {
-        for (int i = 0; i < dynamicLights.length; i++) {
-            dynamicLights[i] = new DynamicLight();
-        }
-        if (dynamicLights.length > 0 && dynamicLights[0] != null) {
-            dynamicLights[0].color.set(1.0f, 0.72f, 0.45f);
-            dynamicLights[0].intensity = 20f;
-            dynamicLights[0].radius = 0.35f;
-            dynamicLights[0].position.set(camera.position).add(0f, 2.5f, 0f);
-        }
-        if (dynamicLights.length > 1 && dynamicLights[1] != null) {
-            dynamicLights[1].color.set(0.4f, 0.65f, 1.0f);
-            dynamicLights[1].intensity = 16f;
-            dynamicLights[1].radius = 0.45f;
-            dynamicLights[1].position.set(camera.position).add(0f, 1.5f, 0f);
-        }
-        activeLightCount = java.lang.Math.min(activeLightCount, dynamicLights.length);
+        lightManager.clear();
+
+        playerTorch = new DynamicLight()
+                .setColor(1.0f, 0.72f, 0.45f)
+                .setIntensity(30f)
+                .setRadius(0.18f)
+                .setRange(28f)
+                .setPosition(camera.position);
+        lightManager.addLight(playerTorch);
+
+        debugLightA = new DynamicLight()
+                .setColor(1.0f, 0.72f, 0.45f)
+                .setIntensity(20f)
+                .setRadius(0.35f)
+                .setRange(36f)
+                .setEnabled(debugLightsEnabled);
+        lightManager.addLight(debugLightA);
+
+        debugLightB = new DynamicLight()
+                .setColor(0.4f, 0.65f, 1.0f)
+                .setIntensity(16f)
+                .setRadius(0.45f)
+                .setRange(40f)
+                .setEnabled(debugLightsEnabled);
+        lightManager.addLight(debugLightB);
     }
 
-    private void updateDynamicLights(double now) {
-        if (dynamicLights.length == 0 || dynamicLights[0] == null) {
-            return;
+    private void updateDynamicLights(double now, float dt) {
+        if (playerTorch != null) {
+            playerTorch.setPosition(camera.position);
         }
+
         float time = (float) now;
-        if (activeLightCount > 0 && dynamicLights[0] != null) {
-            dynamicLights[0].position.set(
-                    camera.position.x + (float) java.lang.Math.cos(time * 0.65f) * 4.0f,
-                    camera.position.y + 2.5f,
-                    camera.position.z + (float) java.lang.Math.sin(time * 0.65f) * 4.0f
-            );
+        if (debugLightA != null) {
+            debugLightA.setEnabled(debugLightsEnabled);
+            if (debugLightsEnabled) {
+                debugLightA.setPosition(
+                        camera.position.x + (float) java.lang.Math.cos(time * 0.65f) * 4.0f,
+                        camera.position.y + 2.5f,
+                        camera.position.z + (float) java.lang.Math.sin(time * 0.65f) * 4.0f
+                );
+            }
         }
-        if (activeLightCount > 1 && dynamicLights[1] != null) {
-            dynamicLights[1].position.set(
-                    camera.position.x + (float) java.lang.Math.cos(time * 0.85f + java.lang.Math.PI * 0.5f) * 3.2f,
-                    camera.position.y + 1.5f + (float) java.lang.Math.sin(time * 0.45f) * 0.75f,
-                    camera.position.z + (float) java.lang.Math.sin(time * 0.85f + java.lang.Math.PI * 0.5f) * 3.2f
-            );
+        if (debugLightB != null) {
+            debugLightB.setEnabled(debugLightsEnabled);
+            if (debugLightsEnabled) {
+                debugLightB.setPosition(
+                        camera.position.x + (float) java.lang.Math.cos(time * 0.85f + java.lang.Math.PI * 0.5f) * 3.2f,
+                        camera.position.y + 1.5f + (float) java.lang.Math.sin(time * 0.45f) * 0.75f,
+                        camera.position.z + (float) java.lang.Math.sin(time * 0.85f + java.lang.Math.PI * 0.5f) * 3.2f
+                );
+            }
         }
+
+        lightManager.update(dt);
     }
 
     private void uploadDynamicLights() {
-        int count = java.lang.Math.min(activeLightCount, dynamicLights.length);
+        lightManager.gatherActiveLights(camera.position, MAX_DYNAMIC_LIGHTS, activeLightsScratch);
+        int count = activeLightsScratch.size();
         if (locComputeLightCount >= 0) {
             glUniform1i(locComputeLightCount, count);
         }
@@ -588,33 +621,31 @@ public class Engine {
             glUniform1i(locComputeLightSoftSamples, dynamicLightSoftSamples);
         }
         for (int i = 0; i < MAX_DYNAMIC_LIGHTS; i++) {
-            float px = 0f, py = 0f, pz = 0f, radius = 0f;
+            float px = 0f, py = 0f, pz = 0f, range = 0f;
+            float radius = 0f;
             float r = 0f, g = 0f, b = 0f, intensity = 0f;
-            if (i < count && dynamicLights[i] != null) {
-                DynamicLight light = dynamicLights[i];
-                px = light.position.x;
-                py = light.position.y;
-                pz = light.position.z;
-                radius = light.radius;
-                r = light.color.x;
-                g = light.color.y;
-                b = light.color.z;
-                intensity = light.intensity;
+            if (i < count) {
+                DynamicLight light = activeLightsScratch.get(i);
+                px = light.position().x;
+                py = light.position().y;
+                pz = light.position().z;
+                range = light.range();
+                radius = light.radius();
+                r = light.color().x;
+                g = light.color().y;
+                b = light.color().z;
+                intensity = light.intensity();
             }
             if (locComputeLightPositions[i] >= 0) {
-                glUniform4f(locComputeLightPositions[i], px, py, pz, radius);
+                glUniform4f(locComputeLightPositions[i], px, py, pz, range);
             }
             if (locComputeLightColors[i] >= 0) {
                 glUniform4f(locComputeLightColors[i], r, g, b, intensity);
             }
+            if (locComputeLightRadii[i] >= 0) {
+                glUniform1f(locComputeLightRadii[i], radius);
+            }
         }
-    }
-
-    private static final class DynamicLight {
-        final Vector3f position = new Vector3f();
-        final Vector3f color = new Vector3f(1f, 1f, 1f);
-        float intensity = 0f;
-        float radius = 0.25f;
     }
 
     private void rebuildChunkMeshes(java.util.List<Chunk> chunks) {
@@ -820,7 +851,7 @@ public class Engine {
 
             java.util.List<Chunk> visibleChunks = filterVisibleChunks(loadedChunks, frustum);
 
-            updateDynamicLights(now);
+            updateDynamicLights(now, dt);
 
             if (physicsSystem != null) {
                 physicsSystem.stepSimulation(dt);
@@ -838,12 +869,11 @@ public class Engine {
                 if (locComputeSunAngularRadius >= 0) glUniform1f(locComputeSunAngularRadius, 0.00465f);    // ~0.266°
                 if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, 8);
 
-                if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 1);
-                if (locComputeTorchPos >= 0)
-                    glUniform3f(locComputeTorchPos, camera.position.x, camera.position.y, camera.position.z);
-                if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 30.0f);
-                if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.15f);
-                if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 8);
+                if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 0);
+                if (locComputeTorchPos >= 0) glUniform3f(locComputeTorchPos, 0f, 0f, 0f);
+                if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 0.0f);
+                if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.0f);
+                if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 0);
 
                 if (locComputeGIEnabled >= 0) glUniform1i(locComputeGIEnabled, enableGI ? 1 : 0);
                 if (locComputeGISampleCount >= 0) glUniform1i(locComputeGISampleCount, giSampleCount);
