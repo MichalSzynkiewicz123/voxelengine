@@ -6,6 +6,7 @@ import java.util.Random;
 
 public class Chunk {
     public static final int SX = 16, SY = 256, SZ = 16;
+    public static final int TOTAL_VOXELS = SX * SY * SZ;
     private static final int SECTION_HEIGHT = 16;
     private static final int SECTION_COUNT = (SY + SECTION_HEIGHT - 1) / SECTION_HEIGHT;
     private ChunkPos pos;
@@ -133,6 +134,55 @@ public class Chunk {
             }
         }
         populateStructures(gen, columns);
+        markMeshDirty();
+    }
+
+    public DenseData captureDenseData() {
+        byte[] voxels = new byte[TOTAL_VOXELS];
+        int sectionSize = SX * SECTION_HEIGHT * SZ;
+        int nonAir = 0;
+        for (int sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+            Section section = sections[sectionIndex];
+            if (section == null) {
+                continue;
+            }
+            System.arraycopy(section.voxels, 0, voxels, sectionIndex * sectionSize, section.voxels.length);
+            nonAir += section.nonAir;
+        }
+        return new DenseData(voxels, nonAir);
+    }
+
+    public void applyDenseData(byte[] data) {
+        if (data == null) {
+            throw new IllegalArgumentException("Chunk dense data cannot be null");
+        }
+        if (data.length != TOTAL_VOXELS) {
+            throw new IllegalArgumentException("Unexpected dense chunk data length: " + data.length + " (expected " + TOTAL_VOXELS + ")");
+        }
+        int sectionSize = SX * SECTION_HEIGHT * SZ;
+        for (int sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+            Section section = sections[sectionIndex];
+            int offset = sectionIndex * sectionSize;
+            int nonAir = 0;
+            for (int i = 0; i < sectionSize; i++) {
+                if ((data[offset + i] & 0xFF) != Blocks.AIR) {
+                    nonAir++;
+                }
+            }
+            if (nonAir == 0) {
+                if (section != null) {
+                    section.clear();
+                    sections[sectionIndex] = null;
+                }
+                continue;
+            }
+            if (section == null) {
+                section = new Section();
+                sections[sectionIndex] = section;
+            }
+            section.nonAir = nonAir;
+            System.arraycopy(data, offset, section.voxels, 0, section.voxels.length);
+        }
         markMeshDirty();
     }
 
@@ -372,5 +422,8 @@ public class Chunk {
             nonAir = 0;
             java.util.Arrays.fill(voxels, (byte) 0);
         }
+    }
+
+    public record DenseData(byte[] voxels, int nonAir) {
     }
 }

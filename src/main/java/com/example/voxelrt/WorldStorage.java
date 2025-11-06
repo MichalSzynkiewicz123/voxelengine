@@ -21,8 +21,11 @@ import java.util.concurrent.TimeUnit;
  * Persists chunk edits to disk so that player changes survive streaming and restarts.
  */
 public class WorldStorage implements AutoCloseable {
+    private static final int CHUNK_DATA_FILE_VERSION = 1;
+
     private final Path baseDir;
-    private final Path chunkDir;
+    private final Path chunkEditDir;
+    private final Path chunkDataDir;
     private final ExecutorService ioExecutor;
     private final ConcurrentLinkedQueue<CompletableFuture<Void>> pendingSaves = new ConcurrentLinkedQueue<>();
 
@@ -33,11 +36,17 @@ public class WorldStorage implements AutoCloseable {
         } catch (IOException ex) {
             throw new RuntimeException("Failed to create world directory " + baseDir, ex);
         }
-        this.chunkDir = baseDir.resolve("chunks");
+        this.chunkEditDir = baseDir.resolve("chunks");
         try {
-            Files.createDirectories(chunkDir);
+            Files.createDirectories(chunkEditDir);
         } catch (IOException ex) {
-            throw new RuntimeException("Failed to create chunk directory " + chunkDir, ex);
+            throw new RuntimeException("Failed to create chunk directory " + chunkEditDir, ex);
+        }
+        this.chunkDataDir = baseDir.resolve("chunkdata");
+        try {
+            Files.createDirectories(chunkDataDir);
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to create chunk data directory " + chunkDataDir, ex);
         }
         int workers = Math.max(1, Runtime.getRuntime().availableProcessors() / 4);
         this.ioExecutor = Executors.newFixedThreadPool(workers, r -> {
@@ -49,7 +58,7 @@ public class WorldStorage implements AutoCloseable {
 
     public List<ChunkEdit> loadChunkEdits(ChunkPos pos) {
         Objects.requireNonNull(pos, "pos");
-        Path file = chunkFile(pos);
+        Path file = chunkEditFile(pos);
         if (!Files.exists(file)) {
             return Collections.emptyList();
         }
@@ -82,7 +91,7 @@ public class WorldStorage implements AutoCloseable {
     public void saveChunkEdits(ChunkPos pos, List<ChunkEdit> edits) {
         Objects.requireNonNull(pos, "pos");
         List<ChunkEdit> list = edits == null ? Collections.emptyList() : edits;
-        Path file = chunkFile(pos);
+        Path file = chunkEditFile(pos);
         if (list.isEmpty()) {
             try {
                 Files.deleteIfExists(file);
@@ -109,6 +118,65 @@ public class WorldStorage implements AutoCloseable {
         }
     }
 
+    public ChunkCompression.CompressedChunkData loadChunkData(ChunkPos pos) {
+        Objects.requireNonNull(pos, "pos");
+        Path file = chunkDataFile(pos);
+        if (!Files.exists(file)) {
+            return null;
+        }
+        try (InputStream in = Files.newInputStream(file); DataInputStream data = new DataInputStream(in)) {
+            int fileVersion = data.readInt();
+            if (fileVersion != CHUNK_DATA_FILE_VERSION) {
+                System.err.println("[WorldStorage] Unsupported chunk data file version " + fileVersion + " for " + pos);
+                return null;
+            }
+            int compressionVersion = data.readInt();
+            if (compressionVersion != ChunkCompression.currentFormatVersion()) {
+                System.err.println("[WorldStorage] Unsupported chunk compression version " + compressionVersion + " for " + pos);
+                return null;
+            }
+            boolean allAir = data.readBoolean();
+            int uncompressedSize = data.readInt();
+            int nonAir = data.readInt();
+            int compressedLength = data.readInt();
+            byte[] compressed = new byte[compressedLength];
+            data.readFully(compressed);
+            return new ChunkCompression.CompressedChunkData(compressed, uncompressedSize, nonAir, allAir, compressionVersion);
+        } catch (IOException ex) {
+            System.err.println("[WorldStorage] Failed to read chunk data for " + pos + ": " + ex.getMessage());
+            return null;
+        }
+    }
+
+    public void saveChunkDataAsync(ChunkPos pos, ChunkCompression.CompressedChunkData data) {
+        ChunkCompression.CompressedChunkData snapshot = data;
+        CompletableFuture<Void> future = CompletableFuture.runAsync(() -> saveChunkData(pos, snapshot), ioExecutor);
+        pendingSaves.add(future);
+    }
+
+    public void saveChunkData(ChunkPos pos, ChunkCompression.CompressedChunkData data) {
+        Objects.requireNonNull(pos, "pos");
+        Objects.requireNonNull(data, "data");
+        Path file = chunkDataFile(pos);
+        try {
+            Files.createDirectories(file.getParent());
+        } catch (IOException ex) {
+            System.err.println("[WorldStorage] Failed to create parent directories for " + file + ": " + ex.getMessage());
+        }
+        try (OutputStream out = Files.newOutputStream(file); DataOutputStream dataOut = new DataOutputStream(out)) {
+            dataOut.writeInt(CHUNK_DATA_FILE_VERSION);
+            dataOut.writeInt(data.formatVersion());
+            dataOut.writeBoolean(data.allAir());
+            dataOut.writeInt(data.uncompressedSize());
+            dataOut.writeInt(data.nonAir());
+            byte[] compressed = data.compressed();
+            dataOut.writeInt(compressed.length);
+            dataOut.write(compressed);
+        } catch (IOException ex) {
+            System.err.println("[WorldStorage] Failed to write chunk data for " + pos + ": " + ex.getMessage());
+        }
+    }
+
     public void waitForPendingSaves() {
         CompletableFuture<Void> future;
         while ((future = pendingSaves.poll()) != null) {
@@ -130,8 +198,12 @@ public class WorldStorage implements AutoCloseable {
         }
     }
 
-    private Path chunkFile(ChunkPos pos) {
-        return chunkDir.resolve(pos.cx() + "_" + pos.cz() + ".bin");
+    private Path chunkEditFile(ChunkPos pos) {
+        return chunkEditDir.resolve(pos.cx() + "_" + pos.cz() + ".bin");
+    }
+
+    private Path chunkDataFile(ChunkPos pos) {
+        return chunkDataDir.resolve(pos.cx() + "_" + pos.cz() + ".cbin");
     }
 
     public record ChunkEdit(int x, int y, int z, int block) {
