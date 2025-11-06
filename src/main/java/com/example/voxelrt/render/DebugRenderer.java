@@ -169,12 +169,12 @@ public final class DebugRenderer implements AutoCloseable {
         if (lineVertices == 0) {
             return;
         }
+        FloatBuffer vertexBuf = org.lwjgl.system.MemoryUtil.memAllocFloat(lineFloats);
         try (MemoryStack stack = MemoryStack.stackPush()) {
             FloatBuffer projBuf = stack.mallocFloat(16);
             proj.get(projBuf);
             FloatBuffer viewBuf = stack.mallocFloat(16);
             view.get(viewBuf);
-            FloatBuffer vertexBuf = stack.mallocFloat(lineFloats);
             vertexBuf.put(lineData, 0, lineFloats).flip();
 
             glUseProgram(lineProgram);
@@ -191,6 +191,8 @@ public final class DebugRenderer implements AutoCloseable {
             glEnable(GL_DEPTH_TEST);
             glBindVertexArray(0);
             glUseProgram(0);
+        } finally {
+            org.lwjgl.system.MemoryUtil.memFree(vertexBuf);
         }
         lineFloats = 0;
         lineVertices = 0;
@@ -200,11 +202,11 @@ public final class DebugRenderer implements AutoCloseable {
         if (textVertices == 0) {
             return;
         }
+        FloatBuffer vertexBuf = org.lwjgl.system.MemoryUtil.memAllocFloat(textFloats);
         try (MemoryStack stack = MemoryStack.stackPush()) {
             Matrix4f ortho = new Matrix4f().ortho(0f, width, height, 0f, -1f, 1f);
             FloatBuffer orthoBuf = stack.mallocFloat(16);
             ortho.get(orthoBuf);
-            FloatBuffer vertexBuf = stack.mallocFloat(textFloats);
             vertexBuf.put(textData, 0, textFloats).flip();
 
             glUseProgram(textProgram);
@@ -220,6 +222,8 @@ public final class DebugRenderer implements AutoCloseable {
             glEnable(GL_DEPTH_TEST);
             glBindVertexArray(0);
             glUseProgram(0);
+        } finally {
+            org.lwjgl.system.MemoryUtil.memFree(vertexBuf);
         }
         textFloats = 0;
         textVertices = 0;
