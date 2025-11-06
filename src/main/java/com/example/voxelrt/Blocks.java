@@ -72,6 +72,24 @@ public final class Blocks {
         };
     }
 
+    /**
+     * Human readable name for the given block identifier.
+     */
+    public static String name(int id) {
+        return switch (id) {
+            case AIR -> "AIR";
+            case GRASS -> "GRASS";
+            case DIRT -> "DIRT";
+            case STONE -> "STONE";
+            case SAND -> "SAND";
+            case SNOW -> "SNOW";
+            case LOG -> "LOG";
+            case LEAVES -> "LEAVES";
+            case CACTUS -> "CACTUS";
+            default -> "UNKNOWN";
+        };
+    }
+
     private Blocks() {
         // Utility class – prevent instantiation.
     }
