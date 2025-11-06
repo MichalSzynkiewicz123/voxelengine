@@ -10,6 +10,7 @@ import com.example.voxelrt.render.DynamicLight;
 import com.example.voxelrt.render.DebugRenderer;
 import com.example.voxelrt.render.LightManager;
 import com.example.voxelrt.render.LightPropagationVolume;
+import com.example.voxelrt.util.Profiler;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -194,6 +195,24 @@ public class Engine {
     private int shadowOccupancyScale = 2;
     private int dynamicLightSoftSamples = 6;
 
+    private final Profiler profiler = new Profiler();
+    private Profiler.Snapshot profilerSnapshot = Profiler.Snapshot.EMPTY;
+    private int profilerLevel = 0;
+    private double profilerLastStatsUpdate = 0.0;
+    private int profilerLoadedChunks = 0;
+    private int profilerVisibleChunks = 0;
+    private int profilerPendingChunks = 0;
+    private int profilerCompletedChunks = 0;
+    private int profilerChunkPool = 0;
+    private int profilerMaxLoadedChunks = 0;
+    private int profilerDynamicBodies = 0;
+    private int profilerDebrisCount = 0;
+    private int profilerStaticBodyCount = 0;
+    private int profilerActiveLights = 0;
+    private long profilerUsedMemoryBytes = 0L;
+    private long profilerTotalMemoryBytes = 0L;
+    private long profilerMaxMemoryBytes = 0L;
+
     /**
      * Starts the engine and tears down the native resources when the loop exits.
      */
@@ -279,6 +298,15 @@ public class Engine {
                 if (key == GLFW_KEY_F4) {
                     showLightingDebug = !showLightingDebug;
                     System.out.println("[DEBUG] lightingDebug=" + showLightingDebug);
+                }
+                if (key == GLFW_KEY_F5) {
+                    profilerLevel = (profilerLevel + 1) % 3;
+                    System.out.println("[DEBUG] profilerOverlayLevel=" + profilerLevel);
+                }
+                if (key == GLFW_KEY_F9) {
+                    updateProfilerStats();
+                    profilerLastStatsUpdate = glfwGetTime();
+                    logProfilerSnapshot();
                 }
                 if (key == GLFW_KEY_E) {
                     cyclePalette(1);
@@ -1123,6 +1151,49 @@ public class Engine {
             }
         }
 
+        if (profilerLevel > 0) {
+            Profiler.Snapshot snapshot = profilerSnapshot;
+            debugRenderer.addText(hudX, hudY, hudScale,
+                    String.format("Frame: %.2f ms (avg %.2f) | FPS: %.1f (avg %.1f)",
+                            snapshot.frameTimeMs(), snapshot.averageFrameTimeMs(),
+                            snapshot.fps(), snapshot.averageFps()),
+                    0.75f, 0.95f, 1.0f, 1f);
+            hudY += 14f;
+
+            debugRenderer.addText(hudX, hudY, hudScale,
+                    String.format("Memory: %s / %s MB (max %s MB)",
+                            formatMegabytes(profilerUsedMemoryBytes),
+                            formatMegabytes(profilerTotalMemoryBytes),
+                            formatMegabytes(profilerMaxMemoryBytes)),
+                    0.78f, 0.9f, 1.0f, 1f);
+            hudY += 14f;
+
+            debugRenderer.addText(hudX, hudY, hudScale,
+                    String.format("Chunks: %d/%d loaded | visible: %d | pending: %d | completed: %d | pool: %d",
+                            profilerLoadedChunks, profilerMaxLoadedChunks, profilerVisibleChunks,
+                            profilerPendingChunks, profilerCompletedChunks, profilerChunkPool),
+                    0.75f, 0.85f, 1.0f, 1f);
+            hudY += 14f;
+
+            debugRenderer.addText(hudX, hudY, hudScale,
+                    String.format("Physics: %d dynamic | %d static | debris: %d",
+                            profilerDynamicBodies, profilerStaticBodyCount, profilerDebrisCount),
+                    0.85f, 0.78f, 1.0f, 1f);
+            hudY += 14f;
+
+            if (profilerLevel > 1 && !snapshot.sections().isEmpty()) {
+                debugRenderer.addText(hudX, hudY, hudScale, "Timing (ms):",
+                        0.7f, 0.9f, 1.0f, 1f);
+                hudY += 14f;
+                for (Profiler.SectionSnapshot section : snapshot.sections()) {
+                    debugRenderer.addText(hudX + 14f, hudY, hudScale,
+                            String.format("%s: %.3f (avg %.3f)", section.name(), section.lastMs(), section.averageMs()),
+                            0.68f, 0.85f, 1.0f, 1f);
+                    hudY += 12f;
+                }
+            }
+        }
+
         String chunkToggle = showChunkBounds ? "ON" : "OFF";
         String physicsToggle = physicsSystem != null ? (showPhysicsDebug ? "ON" : "OFF") : "N/A";
         String lightToggle = showLightingDebug ? "ON" : "OFF";
@@ -1134,7 +1205,7 @@ public class Engine {
         hudY += 14f;
 
         debugRenderer.addText(hudX, hudY, hudScale,
-                String.format("Active lights: %d", activeLightsScratch.size()),
+                String.format("Active lights: %d", profilerActiveLights),
                 0.8f, 0.8f, 0.95f, 1f);
 
         debugRenderer.renderLines(proj, view);
@@ -1199,6 +1270,7 @@ public class Engine {
         double fpsTimer = lastTime;
         int fpsFrames = 0;
         while (!glfwWindowShouldClose(window)) {
+            profiler.beginFrame();
             double now = glfwGetTime();
             float dt = (float) (now - lastTime);
             lastTime = now;
@@ -1208,7 +1280,9 @@ public class Engine {
             pollInput(dt);
             updateLodDistances(dt);
 
-            chunkManager.update(chunkIntegrationBudget);
+            try (Profiler.Sample ignored = profileSection("Chunk Update", 2)) {
+                chunkManager.update(chunkIntegrationBudget);
+            }
             boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
 
             int cx = (int) Math.floor(camera.position.x);
@@ -1224,7 +1298,9 @@ public class Engine {
             if (physicsSystem != null) {
                 physicsSystem.pruneStaticChunks(loadedChunks);
             }
-            rebuildChunkMeshes(loadedChunks);
+            try (Profiler.Sample ignored = profileSection("Mesh Rebuild", 2)) {
+                rebuildChunkMeshes(loadedChunks);
+            }
 
             int margin = activeRegionMargin;
             int rw = Math.max(1, (int) (width * resolutionScale));
@@ -1245,109 +1321,119 @@ public class Engine {
                     rotatedSignificantly;
 
             if (needsRegionRebuild) {
-                region.rebuildAround(cx, cy, cz, frustum, new ChunkPos(streamingCenterChunkX, streamingCenterChunkZ), streamingRequestRadiusChunks);
-                ssboVoxels = region.ssbo();
-                ssboVoxelsCoarse = region.ssboCoarse();
-                ssboVoxelsFar = region.ssboFar();
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
-                lastRegionYaw = camera.yawDeg();
-                lastRegionPitch = camera.pitchDeg();
-                resetPrefetchBounds();
-                lastPrefetchPosition.set(camera.position);
-                prefetchActiveRegionPadding();
+                try (Profiler.Sample ignored = profileSection("Region Rebuild", 2)) {
+                    region.rebuildAround(cx, cy, cz, frustum, new ChunkPos(streamingCenterChunkX, streamingCenterChunkZ), streamingRequestRadiusChunks);
+                    ssboVoxels = region.ssbo();
+                    ssboVoxelsCoarse = region.ssboCoarse();
+                    ssboVoxelsFar = region.ssboFar();
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
+                    lastRegionYaw = camera.yawDeg();
+                    lastRegionPitch = camera.pitchDeg();
+                    resetPrefetchBounds();
+                    lastPrefetchPosition.set(camera.position);
+                    prefetchActiveRegionPadding();
+                }
             }
 
             updatePrefetch();
 
             java.util.List<Chunk> visibleChunks = filterVisibleChunks(loadedChunks, frustum);
 
-            updateDynamicLights(now, dt);
-            lightManager.gatherActiveLights(camera.position, MAX_DYNAMIC_LIGHTS, activeLightsScratch);
+            try (Profiler.Sample ignored = profileSection("Light Update", 2)) {
+                updateDynamicLights(now, dt);
+                lightManager.gatherActiveLights(camera.position, MAX_DYNAMIC_LIGHTS, activeLightsScratch);
+            }
+            profilerActiveLights = activeLightsScratch.size();
 
             Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
-            updateGlobalIlluminationVolume(sunDir);
+            try (Profiler.Sample ignored = profileSection("GI Update", 2)) {
+                updateGlobalIlluminationVolume(sunDir);
+            }
 
             if (physicsSystem != null) {
-                physicsSystem.stepSimulation(dt);
+                try (Profiler.Sample ignored = profileSection("Physics", 2)) {
+                    physicsSystem.stepSimulation(dt);
+                }
             }
 
             // Compute pass
             if (!rasterEnabled && computeEnabled) {
-                glUseProgram(computeProgram);
-                if (locComputeSkyModel >= 0) glUniform1i(locComputeSkyModel, 1);         // Preetham
-                if (locComputeTurbidity >= 0) glUniform1f(locComputeTurbidity, 2.5f);    // mild clear sky
-                if (locComputeSkyIntensity >= 0) glUniform1f(locComputeSkyIntensity, 1.0f);
-                if (locComputeSkyZenith >= 0)
-                    glUniform3f(locComputeSkyZenith, 0.60f, 0.70f, 0.90f);   // fallback gradient
-                if (locComputeSkyHorizon >= 0) glUniform3f(locComputeSkyHorizon, 0.95f, 0.80f, 0.60f);
-                if (locComputeSunAngularRadius >= 0) glUniform1f(locComputeSunAngularRadius, 0.00465f);    // ~0.266°
-                if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, 8);
+                try (Profiler.Sample ignored = profileSection("Compute Render", 2)) {
+                    glUseProgram(computeProgram);
+                    if (locComputeSkyModel >= 0) glUniform1i(locComputeSkyModel, 1);         // Preetham
+                    if (locComputeTurbidity >= 0) glUniform1f(locComputeTurbidity, 2.5f);    // mild clear sky
+                    if (locComputeSkyIntensity >= 0) glUniform1f(locComputeSkyIntensity, 1.0f);
+                    if (locComputeSkyZenith >= 0)
+                        glUniform3f(locComputeSkyZenith, 0.60f, 0.70f, 0.90f);   // fallback gradient
+                    if (locComputeSkyHorizon >= 0) glUniform3f(locComputeSkyHorizon, 0.95f, 0.80f, 0.60f);
+                    if (locComputeSunAngularRadius >= 0) glUniform1f(locComputeSunAngularRadius, 0.00465f);    // ~0.266°
+                    if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, 8);
 
-                if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 0);
-                if (locComputeTorchPos >= 0) glUniform3f(locComputeTorchPos, 0f, 0f, 0f);
-                if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 0.0f);
-                if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.0f);
-                if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 0);
+                    if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 0);
+                    if (locComputeTorchPos >= 0) glUniform3f(locComputeTorchPos, 0f, 0f, 0f);
+                    if (locComputeTorchIntensity >= 0) glUniform1f(locComputeTorchIntensity, 0.0f);
+                    if (locComputeTorchRadius >= 0) glUniform1f(locComputeTorchRadius, 0.0f);
+                    if (locComputeTorchSoftSamples >= 0) glUniform1i(locComputeTorchSoftSamples, 0);
 
-                if (locComputeGIEnabled >= 0) glUniform1i(locComputeGIEnabled, enableGI ? 1 : 0);
-                if (locComputeGISampleCount >= 0) glUniform1i(locComputeGISampleCount, giSampleCount);
-                if (locComputeGIMaxDistance >= 0) glUniform1f(locComputeGIMaxDistance, giMaxDistance);
-                if (locComputeGIIntensity >= 0) glUniform1f(locComputeGIIntensity, giIntensity);
-                boolean giVolumeAvailable = enableGI && giVolumeTexture != 0 && giVolume != null
-                        && giVolume.sizeX() > 0 && giVolume.sizeY() > 0 && giVolume.sizeZ() > 0;
-                if (locComputeGIVolumeEnabled >= 0) {
-                    glUniform1i(locComputeGIVolumeEnabled, giVolumeAvailable ? 1 : 0);
-                }
-                if (locComputeGIVolumeTex >= 0) {
-                    glUniform1i(locComputeGIVolumeTex, 3);
-                }
-                if (giVolumeAvailable) {
-                    if (locComputeGIVolumeOrigin >= 0) {
-                        Vector3fc origin = giVolume.origin();
-                        glUniform3f(locComputeGIVolumeOrigin, origin.x(), origin.y(), origin.z());
+                    if (locComputeGIEnabled >= 0) glUniform1i(locComputeGIEnabled, enableGI ? 1 : 0);
+                    if (locComputeGISampleCount >= 0) glUniform1i(locComputeGISampleCount, giSampleCount);
+                    if (locComputeGIMaxDistance >= 0) glUniform1f(locComputeGIMaxDistance, giMaxDistance);
+                    if (locComputeGIIntensity >= 0) glUniform1f(locComputeGIIntensity, giIntensity);
+                    boolean giVolumeAvailable = enableGI && giVolumeTexture != 0 && giVolume != null
+                            && giVolume.sizeX() > 0 && giVolume.sizeY() > 0 && giVolume.sizeZ() > 0;
+                    if (locComputeGIVolumeEnabled >= 0) {
+                        glUniform1i(locComputeGIVolumeEnabled, giVolumeAvailable ? 1 : 0);
                     }
-                    if (locComputeGIVolumeSize >= 0) {
-                        glUniform3i(locComputeGIVolumeSize, giVolume.sizeX(), giVolume.sizeY(), giVolume.sizeZ());
+                    if (locComputeGIVolumeTex >= 0) {
+                        glUniform1i(locComputeGIVolumeTex, 3);
                     }
-                    if (locComputeGIVolumeCellSize >= 0) {
-                        glUniform1f(locComputeGIVolumeCellSize, giVolume.cellSize());
+                    if (giVolumeAvailable) {
+                        if (locComputeGIVolumeOrigin >= 0) {
+                            Vector3fc origin = giVolume.origin();
+                            glUniform3f(locComputeGIVolumeOrigin, origin.x(), origin.y(), origin.z());
+                        }
+                        if (locComputeGIVolumeSize >= 0) {
+                            glUniform3i(locComputeGIVolumeSize, giVolume.sizeX(), giVolume.sizeY(), giVolume.sizeZ());
+                        }
+                        if (locComputeGIVolumeCellSize >= 0) {
+                            glUniform1f(locComputeGIVolumeCellSize, giVolume.cellSize());
+                        }
+                        glActiveTexture(GL_TEXTURE3);
+                        glBindTexture(GL_TEXTURE_3D, giVolumeTexture);
+                    } else {
+                        glActiveTexture(GL_TEXTURE3);
+                        glBindTexture(GL_TEXTURE_3D, 0);
                     }
-                    glActiveTexture(GL_TEXTURE3);
-                    glBindTexture(GL_TEXTURE_3D, giVolumeTexture);
-                } else {
-                    glActiveTexture(GL_TEXTURE3);
-                    glBindTexture(GL_TEXTURE_3D, 0);
-                }
-                if (locComputeSecondaryTraceMaxSteps >= 0)
-                    glUniform1i(locComputeSecondaryTraceMaxSteps, secondaryTraceMaxSteps);
-                if (locComputeAOEnabled >= 0) glUniform1i(locComputeAOEnabled, enableAO ? 1 : 0);
-                if (locComputeAOSampleCount >= 0) glUniform1i(locComputeAOSampleCount, aoSampleCount);
-                if (locComputeAORadius >= 0) glUniform1f(locComputeAORadius, aoRadius);
-                if (locComputeAOIntensity >= 0) glUniform1f(locComputeAOIntensity, aoIntensity);
-                if (locComputeReflectionEnabled >= 0)
-                    glUniform1i(locComputeReflectionEnabled, enableReflections ? 1 : 0);
-                if (locComputeReflectionMaxDistance >= 0)
-                    glUniform1f(locComputeReflectionMaxDistance, reflectionMaxDistance);
-                if (locComputeReflectionIntensity >= 0)
-                    glUniform1f(locComputeReflectionIntensity, reflectionIntensity);
-                if (locComputeShadowTraceMaxSteps >= 0)
-                    glUniform1i(locComputeShadowTraceMaxSteps, shadowTraceMaxSteps);
-                if (locComputeShadowOccupancyScale >= 0)
-                    glUniform1i(locComputeShadowOccupancyScale, shadowOccupancyScale);
-                uploadDynamicLights();
+                    if (locComputeSecondaryTraceMaxSteps >= 0)
+                        glUniform1i(locComputeSecondaryTraceMaxSteps, secondaryTraceMaxSteps);
+                    if (locComputeAOEnabled >= 0) glUniform1i(locComputeAOEnabled, enableAO ? 1 : 0);
+                    if (locComputeAOSampleCount >= 0) glUniform1i(locComputeAOSampleCount, aoSampleCount);
+                    if (locComputeAORadius >= 0) glUniform1f(locComputeAORadius, aoRadius);
+                    if (locComputeAOIntensity >= 0) glUniform1f(locComputeAOIntensity, aoIntensity);
+                    if (locComputeReflectionEnabled >= 0)
+                        glUniform1i(locComputeReflectionEnabled, enableReflections ? 1 : 0);
+                    if (locComputeReflectionMaxDistance >= 0)
+                        glUniform1f(locComputeReflectionMaxDistance, reflectionMaxDistance);
+                    if (locComputeReflectionIntensity >= 0)
+                        glUniform1f(locComputeReflectionIntensity, reflectionIntensity);
+                    if (locComputeShadowTraceMaxSteps >= 0)
+                        glUniform1i(locComputeShadowTraceMaxSteps, shadowTraceMaxSteps);
+                    if (locComputeShadowOccupancyScale >= 0)
+                        glUniform1i(locComputeShadowOccupancyScale, shadowOccupancyScale);
+                    uploadDynamicLights();
 
-                glBindImageTexture(0, outputTex, 0, false, 0, GL_WRITE_ONLY, GL_RGBA8);
+                    glBindImageTexture(0, outputTex, 0, false, 0, GL_WRITE_ONLY, GL_RGBA8);
 
-                uploadMatrix(locComputeInvProj, invProj);
-                uploadMatrix(locComputeInvView, invView);
+                    uploadMatrix(locComputeInvProj, invProj);
+                    uploadMatrix(locComputeInvView, invView);
 
-                if (locComputeWorldSize >= 0) glUniform3i(locComputeWorldSize, region.rx, region.ry, region.rz);
-                if (locComputeWorldSizeCoarse >= 0)
-                    glUniform3i(locComputeWorldSizeCoarse, region.rxCoarse(), region.ryCoarse(), region.rzCoarse());
-                if (locComputeWorldSizeFar >= 0)
-                    glUniform3i(locComputeWorldSizeFar, region.rxFar(), region.ryFar(), region.rzFar());
+                    if (locComputeWorldSize >= 0) glUniform3i(locComputeWorldSize, region.rx, region.ry, region.rz);
+                    if (locComputeWorldSizeCoarse >= 0)
+                        glUniform3i(locComputeWorldSizeCoarse, region.rxCoarse(), region.ryCoarse(), region.rzCoarse());
+                    if (locComputeWorldSizeFar >= 0)
+                        glUniform3i(locComputeWorldSizeFar, region.rxFar(), region.ryFar(), region.rzFar());
                 if (locComputeRegionOrigin >= 0)
                     glUniform3i(locComputeRegionOrigin, region.originX, region.originY, region.originZ);
                 if (locComputeVoxelScale >= 0) glUniform1f(locComputeVoxelScale, 1.0f);
@@ -1365,22 +1451,27 @@ public class Engine {
                 if (locComputeDebugGradient >= 0) glUniform1i(locComputeDebugGradient, debugGradient ? 1 : 0);
                 if (locComputeUseGPUWorld >= 0) glUniform1i(locComputeUseGPUWorld, useGPUWorld ? 1 : 0);
 
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
-                int gx = (rw + 15) / 16, gy = (rh + 15) / 16;
-                glDispatchCompute(gx, gy, 1);
-                glActiveTexture(GL_TEXTURE3);
-                glBindTexture(GL_TEXTURE_3D, 0);
-                glActiveTexture(GL_TEXTURE0);
-                glUseProgram(0);
-                glMemoryBarrier(GL_ALL_BARRIER_BITS);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
+                    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
+                    int gx = (rw + 15) / 16, gy = (rh + 15) / 16;
+                    glDispatchCompute(gx, gy, 1);
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_3D, 0);
+                    glActiveTexture(GL_TEXTURE0);
+                    glUseProgram(0);
+                    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+                }
             }
 
             // Present
             if (rasterEnabled) {
-                renderChunkMeshes(proj, view, visibleChunks);
-                renderDebris(proj, view);
+                try (Profiler.Sample ignored = profileSection("Chunk Raster", 2)) {
+                    renderChunkMeshes(proj, view, visibleChunks);
+                }
+                try (Profiler.Sample ignored = profileSection("Debris Render", 2)) {
+                    renderDebris(proj, view);
+                }
             } else {
                 glDisable(GL_DEPTH_TEST);
                 glDisable(GL_CULL_FACE);
@@ -1395,10 +1486,16 @@ public class Engine {
                 glDrawArrays(GL_TRIANGLES, 0, 3);
                 glEnable(GL_DEPTH_TEST);
                 glEnable(GL_CULL_FACE);
-                renderDebris(proj, view);
+                try (Profiler.Sample ignored = profileSection("Debris Render", 2)) {
+                    renderDebris(proj, view);
+                }
             }
 
-            renderDebugOverlays(proj, view, visibleChunks);
+            profilerVisibleChunks = visibleChunks != null ? visibleChunks.size() : 0;
+            profilerLoadedChunks = loadedChunks.size();
+            try (Profiler.Sample ignored = profileSection("Debug Overlay", 2)) {
+                renderDebugOverlays(proj, view, visibleChunks);
+            }
 
             if (now - lastPrint > 1.0) {
                 int[] who = new int[1];
@@ -1425,6 +1522,72 @@ public class Engine {
 
             glfwSwapBuffers(window);
             glfwPollEvents();
+            profiler.endFrame();
+
+            double statsNow = glfwGetTime();
+            if (statsNow - profilerLastStatsUpdate >= 1.0) {
+                updateProfilerStats();
+                profilerLastStatsUpdate = statsNow;
+            }
+        }
+    }
+
+    private Profiler.Sample profileSection(String name, int requiredLevel) {
+        return profilerLevel >= requiredLevel ? profiler.sample(name) : Profiler.Sample.noop();
+    }
+
+    private void updateProfilerStats() {
+        profilerSnapshot = profiler.snapshot();
+        if (chunkManager != null) {
+            profilerPendingChunks = chunkManager.pendingGenerationCount();
+            profilerCompletedChunks = chunkManager.completedGenerationCount();
+            profilerChunkPool = chunkManager.chunkPoolSize();
+            profilerMaxLoadedChunks = chunkManager.maxLoadedChunks();
+        } else {
+            profilerPendingChunks = 0;
+            profilerCompletedChunks = 0;
+            profilerChunkPool = 0;
+            profilerMaxLoadedChunks = 0;
+        }
+        if (physicsSystem != null) {
+            profilerDynamicBodies = physicsSystem.dynamicBodyCount();
+            profilerDebrisCount = physicsSystem.debrisCount();
+            profilerStaticBodyCount = physicsSystem.staticChunkBodyCount();
+        } else {
+            profilerDynamicBodies = 0;
+            profilerDebrisCount = 0;
+            profilerStaticBodyCount = 0;
+        }
+        Runtime runtime = Runtime.getRuntime();
+        profilerTotalMemoryBytes = runtime.totalMemory();
+        profilerMaxMemoryBytes = runtime.maxMemory();
+        profilerUsedMemoryBytes = profilerTotalMemoryBytes - runtime.freeMemory();
+    }
+
+    private static String formatMegabytes(long bytes) {
+        return String.format("%.1f", bytes / (1024.0 * 1024.0));
+    }
+
+    private void logProfilerSnapshot() {
+        Profiler.Snapshot snapshot = profiler.snapshot();
+        System.out.printf("[Profiler] Frame %.2f ms (avg %.2f) | FPS %.1f (avg %.1f)%n",
+                snapshot.frameTimeMs(), snapshot.averageFrameTimeMs(),
+                snapshot.fps(), snapshot.averageFps());
+        System.out.printf("[Profiler] Memory %s / %s MB (max %s MB)%n",
+                formatMegabytes(profilerUsedMemoryBytes),
+                formatMegabytes(profilerTotalMemoryBytes),
+                formatMegabytes(profilerMaxMemoryBytes));
+        System.out.printf("[Profiler] Chunks loaded=%d/%d visible=%d pending=%d completed=%d pool=%d%n",
+                profilerLoadedChunks, profilerMaxLoadedChunks, profilerVisibleChunks,
+                profilerPendingChunks, profilerCompletedChunks, profilerChunkPool);
+        System.out.printf("[Profiler] Physics dynamic=%d static=%d debris=%d%n",
+                profilerDynamicBodies, profilerStaticBodyCount, profilerDebrisCount);
+        if (!snapshot.sections().isEmpty()) {
+            System.out.println("[Profiler] Sections:");
+            for (Profiler.SectionSnapshot section : snapshot.sections()) {
+                System.out.printf("[Profiler]  %s: %.3f ms (avg %.3f ms)%n",
+                        section.name(), section.lastMs(), section.averageMs());
+            }
         }
     }
 
