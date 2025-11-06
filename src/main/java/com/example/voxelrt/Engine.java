@@ -116,6 +116,7 @@ public class Engine {
     private double lastMouseX = Double.NaN, lastMouseY = Double.NaN;
 
     private WorldGenerator generator;
+    private WorldStorage worldStorage;
     private ChunkManager chunkManager;
     private ActiveRegion region;
     private int placeBlock = Blocks.GRASS;
@@ -145,6 +146,12 @@ public class Engine {
     private int prefetchedSouth = Integer.MIN_VALUE;
     private int prefetchedNorth = Integer.MAX_VALUE;
     private int chunkIntegrationBudget = 8;
+    private int viewDistanceChunks = 8;
+    private int streamingRequestRadiusChunks = viewDistanceChunks + REGION_PREFETCH_MARGIN_CHUNKS;
+    private int unloadDistanceChunks = streamingRequestRadiusChunks + 1;
+    private int activeRegionMargin = 24;
+    private int streamingCenterChunkX;
+    private int streamingCenterChunkZ;
 
     private final LightManager lightManager = new LightManager();
     private final java.util.ArrayList<DynamicLight> activeLightsScratch = new java.util.ArrayList<>(MAX_DYNAMIC_LIGHTS);
@@ -431,8 +438,12 @@ public class Engine {
         createOutputTexture();
 
         generator = new WorldGenerator(1337L, 62);
+        viewDistanceChunks = determineViewDistanceChunks();
+        streamingRequestRadiusChunks = viewDistanceChunks + REGION_PREFETCH_MARGIN_CHUNKS;
+        unloadDistanceChunks = streamingRequestRadiusChunks + 1;
         int chunkCacheSize = determineChunkCacheSize();
-        chunkManager = new ChunkManager(generator, chunkCacheSize);
+        worldStorage = new WorldStorage(determineWorldDirectory());
+        chunkManager = new ChunkManager(generator, chunkCacheSize, worldStorage);
         chunkIntegrationBudget = determineChunkIntegrationBudget();
         System.out.println("[Engine] Chunk integration budget set to " + chunkIntegrationBudget + " per frame");
         System.out.println("[Engine] Chunk cache capacity set to " + chunkManager.getMaxLoaded() + " chunks");
@@ -443,17 +454,24 @@ public class Engine {
         int topY = findTopSolidY(chunkManager, spawnX, spawnZ);
         camera.position.set(spawnX + 0.5f, topY + 2.5f, spawnZ + 0.5f);
 
-        region = new ActiveRegion(chunkManager, 128, 128, 128);
+        int regionSizeXZ = determineActiveRegionSizeXZ();
+        int regionSizeY = determineActiveRegionHeight();
+        region = new ActiveRegion(chunkManager, regionSizeXZ, regionSizeY, regionSizeXZ);
+        activeRegionMargin = computeActiveRegionMargin(regionSizeXZ, regionSizeY);
         giVolume = new LightPropagationVolume(4);
         int rw = Math.max(1, (int) (width * resolutionScale));
         int rh = Math.max(1, (int) (height * resolutionScale));
         Matrix4f proj = new Matrix4f().perspective((float) Math.toRadians(75.0), (float) rw / rh, 0.1f, 800.0f);
         Matrix4f view = camera.viewMatrix();
         Frustum frustum = buildFrustum(proj, view);
+        streamingCenterChunkX = java.lang.Math.floorDiv((int) Math.floor(camera.position.x), Chunk.SX);
+        streamingCenterChunkZ = java.lang.Math.floorDiv((int) Math.floor(camera.position.z), Chunk.SZ);
         region.rebuildAround((int) Math.floor(camera.position.x),
                 (int) Math.floor(camera.position.y),
                 (int) Math.floor(camera.position.z),
-                frustum);
+                frustum,
+                new ChunkPos(streamingCenterChunkX, streamingCenterChunkZ),
+                streamingRequestRadiusChunks);
         lastRegionYaw = camera.yawDeg();
         lastRegionPitch = camera.pitchDeg();
         ssboVoxels = region.ssbo();
@@ -506,6 +524,111 @@ public class Engine {
 
         long capped = java.lang.Math.min(Integer.MAX_VALUE, computed);
         return (int) java.lang.Math.max(ChunkManager.MIN_CACHE_SIZE, capped);
+    }
+
+    private int determineViewDistanceChunks() {
+        String configured = System.getProperty("voxel.viewDistance");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("VOXEL_VIEW_DISTANCE");
+        }
+        if (configured != null) {
+            try {
+                int parsed = Integer.parseInt(configured.trim());
+                if (parsed > 0) {
+                    return java.lang.Math.max(4, java.lang.Math.min(64, parsed));
+                }
+                System.err.println("[Engine] Ignoring non-positive view distance override: " + configured);
+            } catch (NumberFormatException ex) {
+                System.err.println("[Engine] Failed to parse view distance '" + configured + "': " + ex.getMessage());
+            }
+        }
+        return 8;
+    }
+
+    private int determineActiveRegionSizeXZ() {
+        String configured = System.getProperty("voxel.activeRegionSize");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("VOXEL_ACTIVE_REGION_SIZE");
+        }
+        if (configured != null) {
+            try {
+                int parsed = Integer.parseInt(configured.trim());
+                if (parsed > 0) {
+                    return alignToChunkMultiple(parsed);
+                }
+                System.err.println("[Engine] Ignoring non-positive active region size override: " + configured);
+            } catch (NumberFormatException ex) {
+                System.err.println("[Engine] Failed to parse active region size '" + configured + "': " + ex.getMessage());
+            }
+        }
+        int base = Chunk.SX * (viewDistanceChunks * 2 + 3);
+        int fallback = 128;
+        int auto = java.lang.Math.max(fallback, base);
+        int maxAuto = Chunk.SX * 32; // Cap to keep memory reasonable (~512 blocks)
+        auto = java.lang.Math.min(auto, maxAuto);
+        return alignToChunkMultiple(auto);
+    }
+
+    private int determineActiveRegionHeight() {
+        String configured = System.getProperty("voxel.activeRegionHeight");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("VOXEL_ACTIVE_REGION_HEIGHT");
+        }
+        if (configured != null) {
+            try {
+                int parsed = Integer.parseInt(configured.trim());
+                if (parsed > 0) {
+                    return java.lang.Math.max(64, java.lang.Math.min(Chunk.SY, parsed));
+                }
+                System.err.println("[Engine] Ignoring non-positive active region height override: " + configured);
+            } catch (NumberFormatException ex) {
+                System.err.println("[Engine] Failed to parse active region height '" + configured + "': " + ex.getMessage());
+            }
+        }
+        return 128;
+    }
+
+    private int computeActiveRegionMargin(int regionSize, int regionHeight) {
+        int margin = regionSize / 6;
+        margin = java.lang.Math.max(margin, Chunk.SX);
+        margin = java.lang.Math.max(margin, 24);
+        int maxMargin = regionSize / 2 - Chunk.SX;
+        if (maxMargin > 0) {
+            margin = java.lang.Math.min(margin, maxMargin);
+        }
+        if (regionHeight > 0) {
+            int verticalMax = regionHeight / 2 - 4;
+            if (verticalMax > 0) {
+                margin = java.lang.Math.min(margin, verticalMax);
+            }
+        }
+        return margin;
+    }
+
+    private int alignToChunkMultiple(int blocks) {
+        if (blocks <= 0) {
+            return Chunk.SX;
+        }
+        int remainder = blocks % Chunk.SX;
+        if (remainder != 0) {
+            blocks += Chunk.SX - remainder;
+        }
+        return java.lang.Math.max(Chunk.SX, blocks);
+    }
+
+    private Path determineWorldDirectory() {
+        String configured = System.getProperty("voxel.worldDir");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("VOXEL_WORLD_DIR");
+        }
+        if (configured != null && !configured.isBlank()) {
+            try {
+                return Path.of(configured.trim());
+            } catch (RuntimeException ex) {
+                System.err.println("[Engine] Failed to resolve world directory '" + configured + "': " + ex.getMessage());
+            }
+        }
+        return Path.of("world");
     }
 
     private int determineChunkIntegrationBudget() {
@@ -896,16 +1019,23 @@ public class Engine {
 
             chunkManager.update(chunkIntegrationBudget);
             boolean loadedNewChunks = chunkManager.drainIntegratedFlag();
+
+            int cx = (int) Math.floor(camera.position.x);
+            int cy = (int) Math.floor(camera.position.y);
+            int cz = (int) Math.floor(camera.position.z);
+            int playerChunkX = java.lang.Math.floorDiv(cx, Chunk.SX);
+            int playerChunkZ = java.lang.Math.floorDiv(cz, Chunk.SZ);
+            streamingCenterChunkX = playerChunkX;
+            streamingCenterChunkZ = playerChunkZ;
+            chunkManager.unloadOutsideRadius(new ChunkPos(playerChunkX, playerChunkZ), unloadDistanceChunks);
+
             java.util.List<Chunk> loadedChunks = chunkManager.snapshotLoadedChunks();
             if (physicsSystem != null) {
                 physicsSystem.pruneStaticChunks(loadedChunks);
             }
             rebuildChunkMeshes(loadedChunks);
 
-            int cx = (int) Math.floor(camera.position.x);
-            int cy = (int) Math.floor(camera.position.y);
-            int cz = (int) Math.floor(camera.position.z);
-            int margin = 24;
+            int margin = activeRegionMargin;
             int rw = Math.max(1, (int) (width * resolutionScale));
             int rh = Math.max(1, (int) (height * resolutionScale));
             Matrix4f proj = new Matrix4f().perspective((float) Math.toRadians(75.0), (float) rw / rh, 0.1f, 800.0f);
@@ -924,7 +1054,7 @@ public class Engine {
                     rotatedSignificantly;
 
             if (needsRegionRebuild) {
-                region.rebuildAround(cx, cy, cz, frustum);
+                region.rebuildAround(cx, cy, cz, frustum, new ChunkPos(streamingCenterChunkX, streamingCenterChunkZ), streamingRequestRadiusChunks);
                 ssboVoxels = region.ssbo();
                 ssboVoxelsCoarse = region.ssboCoarse();
                 ssboVoxelsFar = region.ssboFar();
@@ -1208,6 +1338,18 @@ public class Engine {
         prefetchedWest = java.lang.Math.floorDiv(region.originX, Chunk.SX);
         prefetchedSouth = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ);
         prefetchedNorth = java.lang.Math.floorDiv(region.originZ, Chunk.SZ);
+        clampPrefetchBoundsToRadius();
+    }
+
+    private void clampPrefetchBoundsToRadius() {
+        int minX = streamingCenterChunkX - streamingRequestRadiusChunks;
+        int maxX = streamingCenterChunkX + streamingRequestRadiusChunks;
+        int minZ = streamingCenterChunkZ - streamingRequestRadiusChunks;
+        int maxZ = streamingCenterChunkZ + streamingRequestRadiusChunks;
+        prefetchedEast = java.lang.Math.min(prefetchedEast, maxX);
+        prefetchedWest = java.lang.Math.max(prefetchedWest, minX);
+        prefetchedSouth = java.lang.Math.min(prefetchedSouth, maxZ);
+        prefetchedNorth = java.lang.Math.max(prefetchedNorth, minZ);
     }
 
     private void prefetchActiveRegionPadding() {
@@ -1218,6 +1360,18 @@ public class Engine {
         int maxChunkX = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX) + REGION_PREFETCH_MARGIN_CHUNKS;
         int minChunkZ = java.lang.Math.floorDiv(region.originZ, Chunk.SZ) - REGION_PREFETCH_MARGIN_CHUNKS;
         int maxChunkZ = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ) + REGION_PREFETCH_MARGIN_CHUNKS;
+        int minAllowedX = streamingCenterChunkX - streamingRequestRadiusChunks;
+        int maxAllowedX = streamingCenterChunkX + streamingRequestRadiusChunks;
+        int minAllowedZ = streamingCenterChunkZ - streamingRequestRadiusChunks;
+        int maxAllowedZ = streamingCenterChunkZ + streamingRequestRadiusChunks;
+        minChunkX = java.lang.Math.max(minChunkX, minAllowedX);
+        maxChunkX = java.lang.Math.min(maxChunkX, maxAllowedX);
+        minChunkZ = java.lang.Math.max(minChunkZ, minAllowedZ);
+        maxChunkZ = java.lang.Math.min(maxChunkZ, maxAllowedZ);
+        if (minChunkX > maxChunkX || minChunkZ > maxChunkZ) {
+            clampPrefetchBoundsToRadius();
+            return;
+        }
         for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
             requestColumn(chunkX, minChunkZ, maxChunkZ);
         }
@@ -1225,12 +1379,15 @@ public class Engine {
         prefetchedWest = java.lang.Math.min(prefetchedWest, minChunkX);
         prefetchedSouth = java.lang.Math.max(prefetchedSouth, maxChunkZ);
         prefetchedNorth = java.lang.Math.min(prefetchedNorth, minChunkZ);
+        clampPrefetchBoundsToRadius();
     }
 
     private void prefetchEast() {
         int minChunkZ = java.lang.Math.floorDiv(region.originZ, Chunk.SZ);
         int maxChunkZ = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ);
         int desired = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX) + PREFETCH_LOOKAHEAD_CHUNKS;
+        int maxAllowed = streamingCenterChunkX + streamingRequestRadiusChunks;
+        desired = java.lang.Math.min(desired, maxAllowed);
         if (prefetchedEast >= desired) {
             return;
         }
@@ -1238,12 +1395,15 @@ public class Engine {
             requestColumn(chunkX, minChunkZ, maxChunkZ);
         }
         prefetchedEast = desired;
+        clampPrefetchBoundsToRadius();
     }
 
     private void prefetchWest() {
         int minChunkZ = java.lang.Math.floorDiv(region.originZ, Chunk.SZ);
         int maxChunkZ = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ);
         int desired = java.lang.Math.floorDiv(region.originX, Chunk.SX) - PREFETCH_LOOKAHEAD_CHUNKS;
+        int minAllowed = streamingCenterChunkX - streamingRequestRadiusChunks;
+        desired = java.lang.Math.max(desired, minAllowed);
         if (prefetchedWest <= desired) {
             return;
         }
@@ -1251,12 +1411,15 @@ public class Engine {
             requestColumn(chunkX, minChunkZ, maxChunkZ);
         }
         prefetchedWest = desired;
+        clampPrefetchBoundsToRadius();
     }
 
     private void prefetchSouth() {
         int minChunkX = java.lang.Math.floorDiv(region.originX, Chunk.SX);
         int maxChunkX = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX);
         int desired = java.lang.Math.floorDiv(region.originZ + region.rz - 1, Chunk.SZ) + PREFETCH_LOOKAHEAD_CHUNKS;
+        int maxAllowed = streamingCenterChunkZ + streamingRequestRadiusChunks;
+        desired = java.lang.Math.min(desired, maxAllowed);
         if (prefetchedSouth >= desired) {
             return;
         }
@@ -1264,12 +1427,15 @@ public class Engine {
             requestRow(chunkZ, minChunkX, maxChunkX);
         }
         prefetchedSouth = desired;
+        clampPrefetchBoundsToRadius();
     }
 
     private void prefetchNorth() {
         int minChunkX = java.lang.Math.floorDiv(region.originX, Chunk.SX);
         int maxChunkX = java.lang.Math.floorDiv(region.originX + region.rx - 1, Chunk.SX);
         int desired = java.lang.Math.floorDiv(region.originZ, Chunk.SZ) - PREFETCH_LOOKAHEAD_CHUNKS;
+        int minAllowed = streamingCenterChunkZ - streamingRequestRadiusChunks;
+        desired = java.lang.Math.max(desired, minAllowed);
         if (prefetchedNorth <= desired) {
             return;
         }
@@ -1277,18 +1443,30 @@ public class Engine {
             requestRow(chunkZ, minChunkX, maxChunkX);
         }
         prefetchedNorth = desired;
+        clampPrefetchBoundsToRadius();
     }
 
     private void requestColumn(int chunkX, int minChunkZ, int maxChunkZ) {
         for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+            if (!isWithinStreamingRadius(chunkX, chunkZ)) {
+                continue;
+            }
             chunkManager.requestChunk(new ChunkPos(chunkX, chunkZ));
         }
     }
 
     private void requestRow(int chunkZ, int minChunkX, int maxChunkX) {
         for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            if (!isWithinStreamingRadius(chunkX, chunkZ)) {
+                continue;
+            }
             chunkManager.requestChunk(new ChunkPos(chunkX, chunkZ));
         }
+    }
+
+    private boolean isWithinStreamingRadius(int chunkX, int chunkZ) {
+        return java.lang.Math.max(java.lang.Math.abs(chunkX - streamingCenterChunkX),
+                java.lang.Math.abs(chunkZ - streamingCenterChunkZ)) <= streamingRequestRadiusChunks;
     }
 
     private float angularDifference(float current, float previous) {
@@ -1338,10 +1516,14 @@ public class Engine {
             physicsSystem.close();
         }
         if (chunkManager != null) {
+            chunkManager.flushEdits();
             for (Chunk chunk : chunkManager.snapshotLoadedChunks()) {
                 chunk.releaseMesh();
             }
             chunkManager.shutdown();
+        }
+        if (worldStorage != null) {
+            worldStorage.close();
         }
         glfwDestroyWindow(window);
         glfwTerminate();
