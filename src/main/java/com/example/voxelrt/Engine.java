@@ -180,20 +180,21 @@ public class Engine {
     private DynamicLight debugLightB;
     private boolean debugLightsEnabled = true;
     private boolean enableGI = true;
-    private int giSampleCount = 8;
+    private int giSampleCount = 1;
     private float giMaxDistance = 28f;
     private float giIntensity = 0.45f;
     private boolean enableAO = true;
-    private int aoSampleCount = 8;
+    private int aoSampleCount = 2;
     private float aoRadius = 3.0f;
     private float aoIntensity = 1.0f;
     private boolean enableReflections = true;
     private float reflectionMaxDistance = 96f;
     private float reflectionIntensity = 0.6f;
-    private int secondaryTraceMaxSteps = 256;
-    private int shadowTraceMaxSteps = 256;
+    private int secondaryTraceMaxSteps = 96;
+    private int shadowTraceMaxSteps = 96;
     private int shadowOccupancyScale = 2;
-    private int dynamicLightSoftSamples = 6;
+    private int dynamicLightSoftSamples = 2;
+    private int sunSoftSamples = 2;
 
     private final Profiler profiler = new Profiler();
     private Profiler.Snapshot profilerSnapshot = Profiler.Snapshot.EMPTY;
@@ -1369,7 +1370,7 @@ public class Engine {
                         glUniform3f(locComputeSkyZenith, 0.60f, 0.70f, 0.90f);   // fallback gradient
                     if (locComputeSkyHorizon >= 0) glUniform3f(locComputeSkyHorizon, 0.95f, 0.80f, 0.60f);
                     if (locComputeSunAngularRadius >= 0) glUniform1f(locComputeSunAngularRadius, 0.00465f);    // ~0.266°
-                    if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, 8);
+                    if (locComputeSunSoftSamples >= 0) glUniform1i(locComputeSunSoftSamples, sunSoftSamples);
 
                     if (locComputeTorchEnabled >= 0) glUniform1i(locComputeTorchEnabled, 0);
                     if (locComputeTorchPos >= 0) glUniform3f(locComputeTorchPos, 0f, 0f, 0f);
