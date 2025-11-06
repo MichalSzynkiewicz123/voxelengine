@@ -21,12 +21,15 @@ import java.util.List;
  */
 public final class LightPropagationVolume {
     private static final float[][] BLOCK_COLORS = {
-            {0f, 0f, 0f},
-            {0.32f, 0.55f, 0.18f},
-            {0.38f, 0.27f, 0.17f},
-            {0.50f, 0.50f, 0.50f},
-            {0.82f, 0.75f, 0.52f},
-            {0.90f, 0.92f, 0.95f}
+            {0f, 0f, 0f},                    // Air
+            {0.32f, 0.55f, 0.18f},           // Grass
+            {0.38f, 0.27f, 0.17f},           // Dirt
+            {0.50f, 0.50f, 0.50f},           // Stone
+            {0.82f, 0.75f, 0.52f},           // Sand
+            {0.90f, 0.92f, 0.95f},           // Snow
+            {0.43f, 0.29f, 0.18f},           // Log
+            {0.21f, 0.45f, 0.15f},           // Leaves
+            {0.29f, 0.46f, 0.28f}            // Cactus
     };
 
     private static final int[][] FACE_NORMALS = {
