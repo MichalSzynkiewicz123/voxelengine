@@ -1,5 +1,7 @@
 package com.example.voxelrt;
 
+import com.example.voxelrt.svo.SparseVoxelOctree;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -28,6 +30,8 @@ public class ChunkManager {
     private static final String THREAD_COUNT_PROPERTY = "voxel.chunkThreads";
     private static final String THREAD_COUNT_ENV = "VOXEL_CHUNK_THREADS";
     private static final int REQUEST_INTEGRATION_BUDGET = 2;
+    private static final int DEFAULT_SPARSE_SNAPSHOT_COUNT = DEFAULT_CACHE_SIZE * 2;
+    private static final int CHUNK_VOXEL_COUNT = Chunk.SX * Chunk.SY * Chunk.SZ;
     private final WorldGenerator gen;
     private final Map<ChunkPos, Chunk> map = new HashMap<>();
     private final LinkedHashMap<ChunkPos, Chunk> lru = new LinkedHashMap<>(64, 0.75f, true);
@@ -42,6 +46,9 @@ public class ChunkManager {
     private final ConcurrentLinkedQueue<Chunk> chunkPool = new ConcurrentLinkedQueue<>();
     private final WorldStorage storage;
     private final Set<ChunkPos> diskLoadedChunks = new HashSet<>();
+    private final LinkedHashMap<ChunkPos, SparseVoxelOctree> sparseCache = new LinkedHashMap<>(64, 0.75f, true);
+    private final Object sparseLock = new Object();
+    private volatile int maxSparseSnapshots = DEFAULT_SPARSE_SNAPSHOT_COUNT;
 
     public ChunkManager(WorldGenerator g, int maxLoaded) {
         this(g, maxLoaded, null);
@@ -50,6 +57,7 @@ public class ChunkManager {
     public ChunkManager(WorldGenerator g, int maxLoaded, WorldStorage storage) {
         this.gen = g;
         this.maxLoaded = sanitizeMaxLoaded(maxLoaded);
+        this.maxSparseSnapshots = java.lang.Math.max(DEFAULT_SPARSE_SNAPSHOT_COUNT, this.maxLoaded * 2);
         this.storage = storage;
         int threads = resolveThreadCount();
         this.jobSystem = new JobSystem("ChunkGen-", threads);
@@ -78,13 +86,17 @@ public class ChunkManager {
      */
     public void setEdit(int x, int y, int z, int b) {
         long k = key(x, y, z);
+        int chunkX = java.lang.Math.floorDiv(x, Chunk.SX);
+        int chunkZ = java.lang.Math.floorDiv(z, Chunk.SZ);
+        ChunkPos chunkPos = new ChunkPos(chunkX, chunkZ);
         synchronized (editLock) {
             edits.put(k, b);
             if (storage != null) {
-                diskLoadedChunks.remove(new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ)));
+                diskLoadedChunks.remove(chunkPos);
             }
         }
-        Chunk c = getIfLoaded(new ChunkPos(java.lang.Math.floorDiv(x, Chunk.SX), java.lang.Math.floorDiv(z, Chunk.SZ)));
+        invalidateSparseCacheEntry(chunkPos);
+        Chunk c = getIfLoaded(chunkPos);
         if (c != null) {
             int localX = java.lang.Math.floorMod(x, Chunk.SX);
             int localZ = java.lang.Math.floorMod(z, Chunk.SZ);
@@ -111,6 +123,19 @@ public class ChunkManager {
             if (cached != null) {
                 lru.put(p, cached);
                 return cached;
+            }
+        }
+
+        Chunk restored = restoreChunkFromSparse(p);
+        if (restored != null) {
+            return restored;
+        }
+
+        synchronized (lock) {
+            Chunk cachedAfterRestore = map.get(p);
+            if (cachedAfterRestore != null) {
+                lru.put(p, cachedAfterRestore);
+                return cachedAfterRestore;
             }
         }
 
@@ -173,7 +198,16 @@ public class ChunkManager {
             }
         }
         if (!alreadyLoaded) {
-            ensureTask(pos);
+            if (restoreChunkFromSparse(pos) == null) {
+                synchronized (lock) {
+                    Chunk cached = map.get(pos);
+                    if (cached != null) {
+                        lru.put(pos, cached);
+                        return;
+                    }
+                }
+                ensureTask(pos);
+            }
         }
     }
 
@@ -240,6 +274,8 @@ public class ChunkManager {
                 trimToMaxLocked();
             }
         }
+        maxSparseSnapshots = java.lang.Math.max(DEFAULT_SPARSE_SNAPSHOT_COUNT, sanitized * 2);
+        trimSparseCache();
     }
 
     public int getMaxLoaded() {
@@ -433,6 +469,7 @@ public class ChunkManager {
                 diskLoadedChunks.remove(pos);
             }
         }
+        maybeStoreSparseChunk(pos, chunk);
         chunk.releaseMesh();
         chunk.prepareForPool();
         chunkPool.offer(chunk);
@@ -452,6 +489,85 @@ public class ChunkManager {
         int z = (int) (key & 0x1FFFFF);
         if (z >= 0x100000) z -= 0x200000;
         return z;
+    }
+
+    private void invalidateSparseCacheEntry(ChunkPos pos) {
+        synchronized (sparseLock) {
+            sparseCache.remove(pos);
+        }
+    }
+
+    private Chunk restoreChunkFromSparse(ChunkPos pos) {
+        SparseVoxelOctree snapshot;
+        synchronized (sparseLock) {
+            snapshot = sparseCache.remove(pos);
+        }
+        if (snapshot == null) {
+            return null;
+        }
+        if (snapshot.isAllAir()) {
+            // Nothing to restore – treat as empty chunk.
+            return integrateEmptyChunk(pos);
+        }
+        Chunk chunk = obtainChunk(pos);
+        snapshot.applyToChunk(chunk);
+        applyEdits(chunk);
+        chunk.markMeshDirty();
+        synchronized (lock) {
+            map.put(pos, chunk);
+            lru.put(pos, chunk);
+            markNeighborsDirty(pos);
+            trimToMaxLocked();
+        }
+        integratedSinceLastPoll.set(true);
+        return chunk;
+    }
+
+    private Chunk integrateEmptyChunk(ChunkPos pos) {
+        Chunk chunk = obtainChunk(pos);
+        applyEdits(chunk);
+        chunk.markMeshDirty();
+        synchronized (lock) {
+            map.put(pos, chunk);
+            lru.put(pos, chunk);
+            markNeighborsDirty(pos);
+            trimToMaxLocked();
+        }
+        integratedSinceLastPoll.set(true);
+        return chunk;
+    }
+
+    private void maybeStoreSparseChunk(ChunkPos pos, Chunk chunk) {
+        SparseVoxelOctree snapshot = SparseVoxelOctree.fromChunk(chunk);
+        if (snapshot.isAllAir()) {
+            invalidateSparseCacheEntry(pos);
+            return;
+        }
+        if (snapshot.estimateMemoryUsageBytes() >= CHUNK_VOXEL_COUNT) {
+            invalidateSparseCacheEntry(pos);
+            return;
+        }
+        synchronized (sparseLock) {
+            sparseCache.put(pos, snapshot);
+            trimSparseCacheLocked();
+        }
+    }
+
+    private void trimSparseCache() {
+        synchronized (sparseLock) {
+            trimSparseCacheLocked();
+        }
+    }
+
+    private void trimSparseCacheLocked() {
+        while (sparseCache.size() > maxSparseSnapshots) {
+            Iterator<Map.Entry<ChunkPos, SparseVoxelOctree>> it = sparseCache.entrySet().iterator();
+            if (!it.hasNext()) {
+                break;
+            }
+            it.next();
+            it.remove();
+        }
     }
 
     public void unloadOutsideRadius(ChunkPos center, int radius) {
