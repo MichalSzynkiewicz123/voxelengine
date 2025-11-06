@@ -52,7 +52,8 @@ public final class PhysicsSystem implements AutoCloseable {
     private static final float DEBRIS_SIZE = 0.35f;
     private static final float DEBRIS_MASS = 0.35f;
     private static final float DEBRIS_LIFETIME = 6.0f;
-    private static final int MAX_DEBRIS = 128;
+    private static final int MAX_DEBRIS = 64;
+    private static final float DEBRIS_SPAWN_CHANCE = 0.5f;
 
     private static final int MIN_DYNAMIC_VOXELS = 8;
     private static final int MAX_DYNAMIC_BODIES = 32;
@@ -627,6 +628,9 @@ public final class PhysicsSystem implements AutoCloseable {
 
     private void spawnVoxelDebris(int blockId, int wx, int wy, int wz, org.joml.Vector3f impulse) {
         if (blockId == Blocks.AIR) {
+            return;
+        }
+        if (random.nextFloat() >= DEBRIS_SPAWN_CHANCE) {
             return;
         }
         Transform transform = new Transform();
