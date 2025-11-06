@@ -3,9 +3,11 @@ package com.example.voxelrt;
 import com.example.voxelrt.mesh.ChunkBatcher;
 import com.example.voxelrt.mesh.ChunkMesh;
 import com.example.voxelrt.mesh.MeshBuilder;
+import com.example.voxelrt.physics.PhysicsDebugDrawer;
 import com.example.voxelrt.physics.PhysicsSystem;
 import com.example.voxelrt.physics.VoxelDebrisRenderer;
 import com.example.voxelrt.render.DynamicLight;
+import com.example.voxelrt.render.DebugRenderer;
 import com.example.voxelrt.render.LightManager;
 import com.example.voxelrt.render.LightPropagationVolume;
 
@@ -108,6 +110,7 @@ public class Engine {
     private int ssboVoxelsFar;
     private ChunkBatcher chunkBatcher;
     private VoxelDebrisRenderer debrisRenderer;
+    private DebugRenderer debugRenderer;
     private LightPropagationVolume giVolume;
     private int giVolumeTexture = 0;
 
@@ -119,14 +122,30 @@ public class Engine {
     private WorldStorage worldStorage;
     private ChunkManager chunkManager;
     private ActiveRegion region;
-    private int placeBlock = Blocks.GRASS;
+    private static final int[] BLOCK_PALETTE = {
+            Blocks.GRASS,
+            Blocks.DIRT,
+            Blocks.STONE,
+            Blocks.SAND,
+            Blocks.SNOW,
+            Blocks.LOG,
+            Blocks.LEAVES,
+            Blocks.CACTUS
+    };
+    private int blockPaletteIndex = 0;
+    private int placeBlock = BLOCK_PALETTE[0];
     private PhysicsSystem physicsSystem;
+    private PhysicsDebugDrawer physicsDebugDrawer;
 
     private boolean debugGradient = false;
     private boolean presentTest = false;
     private boolean computeEnabled = true;
     private boolean rasterEnabled = false;
     private boolean useGPUWorld = false; // start with GPU fallback visible
+    private boolean editorMode = false;
+    private boolean showChunkBounds = false;
+    private boolean showPhysicsDebug = false;
+    private boolean showLightingDebug = false;
     private float lodSwitchDistance = 72.0f;
     private float lodSwitchDistanceFar = 160.0f;
     private float lodTransitionBand = 12.0f;
@@ -233,14 +252,39 @@ public class Engine {
                     mouseCaptured = !mouseCaptured;
                     glfwSetInputMode(window, GLFW_CURSOR, mouseCaptured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
                 }
+                if (key == GLFW_KEY_F1) {
+                    editorMode = !editorMode;
+                    if (editorMode && !mouseCaptured) {
+                        mouseCaptured = true;
+                        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                    }
+                    System.out.println("[DEBUG] editorMode=" + editorMode);
+                }
+                if (key == GLFW_KEY_F2) {
+                    showChunkBounds = !showChunkBounds;
+                    System.out.println("[DEBUG] chunkBounds=" + showChunkBounds);
+                }
+                if (key == GLFW_KEY_F3) {
+                    if (physicsSystem != null && physicsDebugDrawer != null) {
+                        showPhysicsDebug = !showPhysicsDebug;
+                        int mode = showPhysicsDebug
+                                ? PhysicsDebugDrawer.MODE_WIREFRAME_AABB
+                                : PhysicsDebugDrawer.MODE_NONE;
+                        physicsDebugDrawer.setDebugMode(mode);
+                        System.out.println("[DEBUG] physicsDebug=" + showPhysicsDebug);
+                    } else {
+                        System.out.println("[DEBUG] physicsDebug unavailable");
+                    }
+                }
+                if (key == GLFW_KEY_F4) {
+                    showLightingDebug = !showLightingDebug;
+                    System.out.println("[DEBUG] lightingDebug=" + showLightingDebug);
+                }
                 if (key == GLFW_KEY_E) {
-                    placeBlock = switch (placeBlock) {
-                        case Blocks.GRASS -> Blocks.DIRT;
-                        case Blocks.DIRT -> Blocks.STONE;
-                        case Blocks.STONE -> Blocks.SAND;
-                        case Blocks.SAND -> Blocks.SNOW;
-                        default -> Blocks.GRASS;
-                    };
+                    cyclePalette(1);
+                }
+                if (key >= GLFW_KEY_1 && key <= GLFW_KEY_8) {
+                    selectPaletteIndex(key - GLFW_KEY_1);
                 }
                 if (key == GLFW_KEY_R) {
                     int rw = Math.max(1, (int) (width * resolutionScale));
@@ -432,6 +476,7 @@ public class Engine {
         cacheDebrisUniformLocations();
         chunkBatcher = new ChunkBatcher();
         debrisRenderer = new VoxelDebrisRenderer();
+        debugRenderer = new DebugRenderer(this::loadResource);
         initDynamicLights();
 
         vaoQuad = glGenVertexArrays();
@@ -481,6 +526,9 @@ public class Engine {
         ssboVoxelsFar = region.ssboFar();
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboVoxelsFar);
         physicsSystem = new PhysicsSystem(chunkManager, region);
+        physicsDebugDrawer = new PhysicsDebugDrawer();
+        physicsSystem.world().setDebugDrawer(physicsDebugDrawer);
+        physicsDebugDrawer.setDebugMode(PhysicsDebugDrawer.MODE_NONE);
         resetPrefetchBounds();
         lastPrefetchPosition.set(camera.position);
         prefetchActiveRegionPadding();
@@ -950,6 +998,149 @@ public class Engine {
         glDisable(GL_BLEND);
     }
 
+    private void renderDebugOverlays(Matrix4f proj, Matrix4f view, java.util.List<Chunk> visibleChunks) {
+        if (debugRenderer == null) {
+            return;
+        }
+        debugRenderer.beginFrame();
+
+        Raycast.Hit hit = null;
+        if (chunkManager != null) {
+            hit = Raycast.raycast(chunkManager, new Vector3f(camera.position), camera.getForward(), 12f);
+        }
+        if (hit != null) {
+            debugRenderer.addVoxelOutline(hit.x, hit.y, hit.z, 1.0f, 0.86f, 0.35f, 1.0f);
+            if (editorMode && (hit.nx != 0 || hit.ny != 0 || hit.nz != 0)) {
+                int px = hit.x + hit.nx;
+                int py = hit.y + hit.ny;
+                int pz = hit.z + hit.nz;
+                debugRenderer.addVoxelOutline(px, py, pz, 0.4f, 1.0f, 0.4f, 0.7f);
+            }
+        }
+
+        if (showChunkBounds && visibleChunks != null) {
+            for (Chunk chunk : visibleChunks) {
+                if (chunk == null) {
+                    continue;
+                }
+                ChunkPos pos = chunk.pos();
+                if (pos == null) {
+                    continue;
+                }
+                float minX = pos.cx() * Chunk.SX;
+                float minZ = pos.cz() * Chunk.SZ;
+                float maxX = minX + Chunk.SX;
+                float maxZ = minZ + Chunk.SZ;
+                debugRenderer.addWireBox(minX, 0f, minZ, maxX, Chunk.SY, maxZ, 0.25f, 0.7f, 1.0f, 0.4f);
+            }
+        }
+
+        if (showLightingDebug && !activeLightsScratch.isEmpty()) {
+            for (DynamicLight light : activeLightsScratch) {
+                if (light == null || light.range() <= 0f && light.radius() <= 0f) {
+                    continue;
+                }
+                float radius = light.range() > 0f ? light.range() : light.radius();
+                Vector3f pos = light.position();
+                Vector3f color = light.color();
+                debugRenderer.addWireBox(pos.x - radius, pos.y - radius, pos.z - radius,
+                        pos.x + radius, pos.y + radius, pos.z + radius,
+                        color.x(), color.y(), color.z(), 0.45f);
+            }
+        }
+
+        if (showPhysicsDebug && physicsSystem != null && physicsDebugDrawer != null) {
+            physicsDebugDrawer.beginFrame();
+            physicsSystem.world().debugDrawWorld();
+            physicsDebugDrawer.flush(debugRenderer);
+        }
+
+        float hudX = 18f;
+        float hudY = 28f;
+        float hudScale = 1f;
+        String editorLabel = "F1 Editor Mode: " + (editorMode ? "ON" : "OFF");
+        float editorR = editorMode ? 1.0f : 0.85f;
+        float editorG = editorMode ? 0.88f : 0.85f;
+        float editorB = editorMode ? 0.32f : 0.85f;
+        debugRenderer.addText(hudX, hudY, hudScale, editorLabel, editorR, editorG, editorB, 1f);
+        hudY += 14f;
+
+        if (editorMode) {
+            debugRenderer.addText(hudX, hudY, hudScale,
+                    "Left click remove | Right click place | ESC unlock cursor",
+                    0.85f, 0.85f, 0.85f, 1f);
+            hudY += 14f;
+        }
+
+        Vector3f camPos = camera.position;
+        debugRenderer.addText(hudX, hudY, hudScale,
+                String.format("Position: %.2f, %.2f, %.2f", camPos.x, camPos.y, camPos.z),
+                0.9f, 0.9f, 0.9f, 1f);
+        hudY += 14f;
+
+        if (region != null) {
+            int chunkX = java.lang.Math.floorDiv((int) java.lang.Math.floor(camPos.x), Chunk.SX);
+            int chunkZ = java.lang.Math.floorDiv((int) java.lang.Math.floor(camPos.z), Chunk.SZ);
+            debugRenderer.addText(hudX, hudY, hudScale,
+                    String.format("Chunk: %d, %d | Region origin: %d, %d, %d",
+                            chunkX, chunkZ, region.originX, region.originY, region.originZ),
+                    0.82f, 0.82f, 0.82f, 1f);
+            hudY += 14f;
+        }
+
+        if (hit != null) {
+            int blockId = chunkManager != null ? chunkManager.sample(hit.x, hit.y, hit.z) : Blocks.AIR;
+            debugRenderer.addText(hudX, hudY, hudScale,
+                    String.format("Target: %d, %d, %d [%s]", hit.x, hit.y, hit.z, Blocks.name(blockId)),
+                    0.95f, 0.85f, 0.55f, 1f);
+            hudY += 14f;
+            if (editorMode && (hit.nx != 0 || hit.ny != 0 || hit.nz != 0)) {
+                int px = hit.x + hit.nx;
+                int py = hit.y + hit.ny;
+                int pz = hit.z + hit.nz;
+                debugRenderer.addText(hudX, hudY, hudScale,
+                        String.format("Placement: %d, %d, %d [%s]", px, py, pz, Blocks.name(placeBlock)),
+                        0.75f, 0.95f, 0.75f, 1f);
+                hudY += 14f;
+            }
+        }
+
+        debugRenderer.addText(hudX, hudY, hudScale,
+                String.format("Current block: %s (E / 1-8)", Blocks.name(placeBlock)),
+                0.9f, 0.9f, 1.0f, 1f);
+        hudY += 14f;
+
+        if (editorMode) {
+            for (int i = 0; i < BLOCK_PALETTE.length; i++) {
+                boolean selected = i == blockPaletteIndex;
+                float r = selected ? 0.45f : 0.7f;
+                float g = selected ? 1.0f : 0.7f;
+                float b = selected ? 0.45f : 0.7f;
+                debugRenderer.addText(hudX + 14f, hudY, hudScale,
+                        String.format("%d) %s%s", i + 1, Blocks.name(BLOCK_PALETTE[i]), selected ? " <-" : ""),
+                        r, g, b, 1f);
+                hudY += 12f;
+            }
+        }
+
+        String chunkToggle = showChunkBounds ? "ON" : "OFF";
+        String physicsToggle = physicsSystem != null ? (showPhysicsDebug ? "ON" : "OFF") : "N/A";
+        String lightToggle = showLightingDebug ? "ON" : "OFF";
+        String heatmapToggle = debugGradient ? "ON" : "OFF";
+        debugRenderer.addText(hudX, hudY, hudScale,
+                String.format("F2 Chunk bounds: %s | F3 Physics: %s | F4 Lights: %s | G Heatmap: %s",
+                        chunkToggle, physicsToggle, lightToggle, heatmapToggle),
+                0.8f, 0.8f, 0.8f, 1f);
+        hudY += 14f;
+
+        debugRenderer.addText(hudX, hudY, hudScale,
+                String.format("Active lights: %d", activeLightsScratch.size()),
+                0.8f, 0.8f, 0.95f, 1f);
+
+        debugRenderer.renderLines(proj, view);
+        debugRenderer.renderText(width, height);
+    }
+
     private java.util.List<Chunk> filterVisibleChunks(java.util.List<Chunk> chunks, Frustum frustum) {
         if (chunks.isEmpty()) {
             return java.util.Collections.emptyList();
@@ -1207,6 +1398,8 @@ public class Engine {
                 renderDebris(proj, view);
             }
 
+            renderDebugOverlays(proj, view, visibleChunks);
+
             if (now - lastPrint > 1.0) {
                 int[] who = new int[1];
                 org.lwjgl.opengl.GL46C.glGetIntegeri_v(org.lwjgl.opengl.GL46C.GL_SHADER_STORAGE_BUFFER_BINDING, 0, who);
@@ -1236,7 +1429,11 @@ public class Engine {
     }
 
     private void pollInput(float dt) {
-        float speed = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ? 12f : 6f;
+        boolean sprint = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+        float speed = editorMode ? 12f : 6f;
+        if (sprint) {
+            speed *= editorMode ? 2.0f : 2.0f;
+        }
         Vector3f f = camera.getForward();
         Vector3f r = new Vector3f(f).cross(0, 1, 0).normalize();
         Vector3f u = new Vector3f(0, 1, 0);
@@ -1250,7 +1447,27 @@ public class Engine {
         Vector3f vel = new Vector3f();
         vel.fma(wish.z, f).fma(wish.x, r).fma(wish.y, u);
         if (vel.lengthSquared() > 0) vel.normalize(speed);
-        Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
+        if (editorMode) {
+            camera.position.fma(dt, vel);
+        } else {
+            Physics.collideAABB(chunkManager, camera.position, vel, 0.6f, 1.8f, dt);
+        }
+    }
+
+    private void cyclePalette(int delta) {
+        if (BLOCK_PALETTE.length == 0) {
+            return;
+        }
+        blockPaletteIndex = java.lang.Math.floorMod(blockPaletteIndex + delta, BLOCK_PALETTE.length);
+        placeBlock = BLOCK_PALETTE[blockPaletteIndex];
+    }
+
+    private void selectPaletteIndex(int index) {
+        if (index < 0 || index >= BLOCK_PALETTE.length) {
+            return;
+        }
+        blockPaletteIndex = index;
+        placeBlock = BLOCK_PALETTE[blockPaletteIndex];
     }
 
     private void updateLodDistances(float dt) {
@@ -1511,6 +1728,9 @@ public class Engine {
         }
         if (debrisRenderer != null) {
             debrisRenderer.close();
+        }
+        if (debugRenderer != null) {
+            debugRenderer.close();
         }
         if (physicsSystem != null) {
             physicsSystem.close();
