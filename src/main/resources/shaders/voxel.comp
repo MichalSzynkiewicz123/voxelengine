@@ -32,7 +32,7 @@ uniform float uSkyIntensity;// global sky multiplier
 
 // Soft sun shadow params
 uniform float uSunAngularRadius;// radians (~0.00465)
-uniform int   uSunSoftSamples;// 8–16 recommended
+uniform int   uSunSoftSamples;// 1–2 recommended
 
 // Player torch (soft point/area)
 uniform int   uTorchEnabled;
@@ -348,8 +348,11 @@ bool traceVoxel(vec3 origin, vec3 dir, float maxDistance, int maxSteps, out vec3
         uint id = loadVoxel(v);
         if (id != 0u){
             hitId = id;
-            hitNormal = normalize(lastN);
-            if (length(hitNormal) < 0.5) hitNormal = normalize(-rd);
+            if (any(notEqual(lastN, vec3(0.0)))){
+                hitNormal = lastN;
+            } else {
+                hitNormal = normalize(-rd);
+            }
             hitPos = vec3(v) + vec3(0.5) + 0.5 * hitNormal;
             return true;
         }
@@ -459,12 +462,18 @@ float blockReflectivity(uint id){
 
 // Skylight: cosine-weighted hemisphere sample of envSky with occlusion
 vec3 computeSkyIrradiance(vec3 pHit, vec3 n){
-    const int SKY_SAMPLES = 12;
+    int skySamples = 12;
+    if (uAOEnabled != 0 || (uGIEnabled != 0 && uGISampleCount > 0)){
+        skySamples = 2;
+    }
+    if (skySamples <= 0) return vec3(0.0);
+
     vec3 sum = vec3(0.0);
     float W  = 0.0;
+    float sampleCount = float(skySamples);
 
-    for (int i=0; i<SKY_SAMPLES; ++i){
-        float u = (float(i)+0.5)/float(SKY_SAMPLES);
+    for (int i=0; i<skySamples; ++i){
+        float u = (float(i) + 0.5) / sampleCount;
         float phi = GOLDEN_ANGLE * float(i);
         float y = u;
         float r = sqrt(max(0.0, 1.0 - y*y));
@@ -475,7 +484,7 @@ vec3 computeSkyIrradiance(vec3 pHit, vec3 n){
         if (!oc) sum += envSky(L) * k;
         W += k;
     }
-    return (W > 0.0) ? (sum / W) : vec3(0.0);
+    return (W > 1e-5) ? (sum / W) : vec3(0.0);
 }
 
 float computeAmbientOcclusion(vec3 pHit, vec3 n){
@@ -498,7 +507,7 @@ float computeAmbientOcclusion(vec3 pHit, vec3 n){
         vec3 hemi = vec3(cos(phi) * sinTheta, cosTheta, sin(phi) * sinTheta);
         vec3 sampleDir = normalize(hemi.x * T + hemi.y * n + hemi.z * B);
         float weight = max(dot(n, sampleDir), 0.0);
-        if (weight <= 1e-4) continue;
+        if (weight <= 1e-3) continue;
         bool blocked = traverseHitAnyDistance(pHit + sampleDir * 1e-3, sampleDir, radius);
         if (blocked) occlusion += weight;
         weightSum += weight;
@@ -572,7 +581,7 @@ vec3 computeVolumeGI(vec3 albedo, vec3 pHit, vec3 n){
         vec3 samplePos = worldPos + dir * distance;
         vec3 sampleValue = sampleGIVolume(samplePos);
         float weight = max(dot(n, dir), 0.0);
-        if (weight <= 1e-4) continue;
+        if (weight <= 1e-3) continue;
         sum += sampleValue * weight;
         weightSum += weight;
     }
@@ -598,6 +607,8 @@ vec3 computeIndirectGIPathTrace(vec3 albedo, vec3 pHit, vec3 n){
         float phi = TAU * v;
         vec3 hemi = vec3(cos(phi) * sinTheta, cosTheta, sin(phi) * sinTheta);
         vec3 sampleDir = normalize(hemi.x * T + hemi.y * n + hemi.z * B);
+        float weight = max(dot(n, sampleDir), 0.0);
+        if (weight <= 1e-3) continue;
 
         vec3 start = pHit + n * 1e-3;
         vec3 hitPos, hitNormal;
@@ -606,14 +617,11 @@ vec3 computeIndirectGIPathTrace(vec3 albedo, vec3 pHit, vec3 n){
             vec3 bounceAlbedo = blockColor(hitId);
             vec3 bounce = computeDirectLighting(bounceAlbedo, hitPos, hitNormal)
                         + bounceAlbedo * computeSkyIrradiance(hitPos, hitNormal);
-            float weight = max(dot(n, sampleDir), 0.0);
             sum += bounce * weight;
-            weightSum += weight;
         } else {
-            float weight = max(dot(n, sampleDir), 0.0);
             sum += envSky(sampleDir) * weight;
-            weightSum += weight;
         }
+        weightSum += weight;
     }
 
     if (weightSum > 0.0) sum /= weightSum;
@@ -713,27 +721,31 @@ void main(){
 
     if (useFar && continueTracing){
         vec3 pStartFar = roLocal + rd * tEnterClamped;
-        float startDistFar = length(pStartFar);
-        if (startDistFar > lodSwitchFar + lodBand){
+        float switchFarStart = max(lodSwitchFar + lodBand, 0.0);
+        float switchFarStart2 = switchFarStart * switchFarStart;
+        if (dot(pStartFar, pStartFar) > switchFarStart2){
             ivec3 vFar = ivec3(floor(pStartFar / lodScaleFar));
             vec3 nextBoundaryFar = vec3(vFar + off) * lodScaleFar;
             vec3 tMaxFar  = (nextBoundaryFar - pStartFar) / rd;
             vec3 tDeltaFar = abs(lodScaleFar / rd);
             vec3 lastNFar = vec3(0.0);
             float farT = 0.0;
+            float switchFarExit = max(lodSwitchFar - lodBand, 0.0);
+            float switchFarExit2 = switchFarExit * switchFarExit;
 
             for (int iter=0; iter<1024; ++iter){
                 if (!inBoundsFar(vFar)){ continueTracing = false; break; }
 
                 vec3 cellCenter = vec3(vFar) * lodScaleFar + vec3(0.5 * lodScaleFar);
-                float distFar = length(cellCenter - roLocal);
-                if (distFar <= lodSwitchFar - lodBand){
+                vec3 offsetFar = cellCenter - roLocal;
+                float distFar2 = dot(offsetFar, offsetFar);
+                if (distFar2 <= switchFarExit2){
                     break;
                 }
 
                 uint farId = loadVoxelFar(vFar);
                 if (farId != 0u){
-                    vec3 n = any(notEqual(lastNFar, vec3(0.0))) ? normalize(lastNFar) : normalize(-rd);
+                    vec3 n = any(notEqual(lastNFar, vec3(0.0))) ? lastNFar : normalize(-rd);
                     vec3 pHit = cellCenter + n * (0.5 * lodScaleFar);
                     color = shadeVoxel(farId, pHit, n, rd);
                     blockId = farId;
@@ -781,27 +793,31 @@ void main(){
             continueTracing = false;
         } else {
             vec3 pStartNear = roLocal + rd * stageStartT;
-            float startDistNear = length(pStartNear);
-            if (startDistNear > lodSwitchNear + lodBand){
+            float switchNearStart = max(lodSwitchNear + lodBand, 0.0);
+            float switchNearStart2 = switchNearStart * switchNearStart;
+            if (dot(pStartNear, pStartNear) > switchNearStart2){
                 ivec3 vCoarse = ivec3(floor(pStartNear / lodScaleNear));
                 vec3 nextBoundaryCoarse = vec3(vCoarse + off) * lodScaleNear;
                 vec3 tMaxCoarse  = (nextBoundaryCoarse - pStartNear) / rd;
                 vec3 tDeltaCoarse = abs(lodScaleNear / rd);
                 vec3 lastNNear = vec3(0.0);
                 float coarseT = 0.0;
+                float switchNearExit = max(lodSwitchNear - lodBand, 0.0);
+                float switchNearExit2 = switchNearExit * switchNearExit;
 
                 for (int iter=0; iter<2048; ++iter){
                     if (!inBoundsCoarse(vCoarse)){ continueTracing = false; break; }
 
                     vec3 cellCenter = vec3(vCoarse) * lodScaleNear + vec3(0.5 * lodScaleNear);
-                    float distCoarse = length(cellCenter - roLocal);
-                    if (distCoarse <= lodSwitchNear - lodBand){
+                    vec3 offsetCoarse = cellCenter - roLocal;
+                    float distCoarse2 = dot(offsetCoarse, offsetCoarse);
+                    if (distCoarse2 <= switchNearExit2){
                         break;
                     }
 
                     uint coarseId = loadVoxelCoarse(vCoarse);
                     if (coarseId != 0u){
-                        vec3 n = any(notEqual(lastNNear, vec3(0.0))) ? normalize(lastNNear) : normalize(-rd);
+                        vec3 n = any(notEqual(lastNNear, vec3(0.0))) ? lastNNear : normalize(-rd);
                         vec3 pHit = cellCenter + n * (0.5 * lodScaleNear);
                         color = shadeVoxel(coarseId, pHit, n, rd);
                         blockId = coarseId;
@@ -860,7 +876,7 @@ void main(){
 
                 blockId = loadVoxel(v);
                 if (blockId != 0u){
-                    vec3 n = any(notEqual(lastN, vec3(0.0))) ? normalize(lastN) : normalize(-rd);
+                    vec3 n = any(notEqual(lastN, vec3(0.0))) ? lastN : normalize(-rd);
                     vec3 pHit = vec3(v) + vec3(0.5) + 0.5 * n;
                     color = shadeVoxel(blockId, pHit, n, rd);
                     hit = true;
