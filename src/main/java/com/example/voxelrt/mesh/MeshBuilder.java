@@ -1,9 +1,9 @@
 package com.example.voxelrt.mesh;
 
-import com.example.voxelrt.Blocks;
-import com.example.voxelrt.Chunk;
-import com.example.voxelrt.ChunkManager;
-import com.example.voxelrt.ChunkPos;
+import com.example.voxelrt.world.Blocks;
+import com.example.voxelrt.world.Chunk;
+import com.example.voxelrt.world.ChunkManager;
+import com.example.voxelrt.world.ChunkPos;
 
 import java.util.ArrayList;
 import java.util.List;

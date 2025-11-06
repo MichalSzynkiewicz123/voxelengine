@@ -1,4 +1,4 @@
-package com.example.voxelrt;
+package com.example.voxelrt.world;
 
 /**
  * Block identifiers shared between the CPU world representation and the GPU compute shader.

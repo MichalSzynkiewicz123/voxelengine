@@ -1,6 +1,7 @@
-package com.example.voxelrt;
+package com.example.voxelrt.world;
 
-import com.example.voxelrt.ChunkCompression.CompressedChunkData;
+import com.example.voxelrt.util.concurrent.JobSystem;
+import com.example.voxelrt.world.ChunkCompression.CompressedChunkData;
 import com.example.voxelrt.svo.SparseVoxelOctree;
 
 import java.util.ArrayList;

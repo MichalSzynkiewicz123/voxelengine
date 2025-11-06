@@ -1,4 +1,4 @@
-package com.example.voxelrt;
+package com.example.voxelrt.camera;
 
 import org.joml.Matrix4f;
 import org.joml.Vector4f;

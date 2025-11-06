@@ -1,16 +1,29 @@
-package com.example.voxelrt;
+package com.example.voxelrt.app;
 
+import com.example.voxelrt.app.config.EngineConfig;
+import com.example.voxelrt.camera.Camera;
+import com.example.voxelrt.camera.Frustum;
+import com.example.voxelrt.camera.Raycast;
 import com.example.voxelrt.mesh.ChunkBatcher;
 import com.example.voxelrt.mesh.ChunkMesh;
 import com.example.voxelrt.mesh.MeshBuilder;
 import com.example.voxelrt.physics.PhysicsDebugDrawer;
 import com.example.voxelrt.physics.PhysicsSystem;
 import com.example.voxelrt.physics.VoxelDebrisRenderer;
-import com.example.voxelrt.render.DynamicLight;
 import com.example.voxelrt.render.DebugRenderer;
+import com.example.voxelrt.render.DynamicLight;
 import com.example.voxelrt.render.LightManager;
 import com.example.voxelrt.render.LightPropagationVolume;
+import com.example.voxelrt.render.shader.ShaderSourceLoader;
 import com.example.voxelrt.util.Profiler;
+import com.example.voxelrt.world.ActiveRegion;
+import com.example.voxelrt.world.Blocks;
+import com.example.voxelrt.world.Chunk;
+import com.example.voxelrt.world.ChunkManager;
+import com.example.voxelrt.world.ChunkPos;
+import com.example.voxelrt.world.Physics;
+import com.example.voxelrt.world.WorldGenerator;
+import com.example.voxelrt.world.WorldStorage;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -19,11 +32,8 @@ import org.lwjgl.glfw.GLFWVidMode;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.system.MemoryStack;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL46C.*;
@@ -196,6 +206,7 @@ public class Engine {
     private int dynamicLightSoftSamples = 2;
     private int sunSoftSamples = 2;
 
+    private final ShaderSourceLoader shaderSourceLoader = new ShaderSourceLoader();
     private final Profiler profiler = new Profiler();
     private Profiler.Snapshot profilerSnapshot = Profiler.Snapshot.EMPTY;
     private int profilerLevel = 0;
@@ -427,19 +438,6 @@ public class Engine {
     }
 
     /**
-     * Loads a text resource either from the classpath or directly from the resources directory.
-     */
-    private String loadResource(String path) {
-        try {
-            var is = Thread.currentThread().getContextClassLoader().getResourceAsStream(path);
-            if (is != null) return new String(is.readAllBytes());
-            return Files.readString(Path.of("src/main/resources/" + path));
-        } catch (IOException e) {
-            throw new RuntimeException("load " + path, e);
-        }
-    }
-
-    /**
      * Compiles a shader of the given type and prints a detailed log when compilation fails.
      */
     private int compileShader(int type, String src) {
@@ -486,18 +484,18 @@ public class Engine {
      * Allocates OpenGL resources, loads shaders and seeds the world generation structures.
      */
     private void initResources() {
-        computeProgram = linkProgram(compileShader(GL_COMPUTE_SHADER, loadResource("shaders/voxel.comp")));
+        computeProgram = linkProgram(compileShader(GL_COMPUTE_SHADER, shaderSourceLoader.load("shaders/voxel/voxel.comp")));
         quadProgram = linkProgram(
-                compileShader(GL_VERTEX_SHADER, loadResource("shaders/quad.vert")),
-                compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/quad.frag"))
+                compileShader(GL_VERTEX_SHADER, shaderSourceLoader.load("shaders/quad.vert")),
+                compileShader(GL_FRAGMENT_SHADER, shaderSourceLoader.load("shaders/quad.frag"))
         );
         meshProgram = linkProgram(
-                compileShader(GL_VERTEX_SHADER, loadResource("shaders/chunk.vert")),
-                compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/chunk.frag"))
+                compileShader(GL_VERTEX_SHADER, shaderSourceLoader.load("shaders/chunk.vert")),
+                compileShader(GL_FRAGMENT_SHADER, shaderSourceLoader.load("shaders/chunk.frag"))
         );
         debrisProgram = linkProgram(
-                compileShader(GL_VERTEX_SHADER, loadResource("shaders/debris.vert")),
-                compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/debris.frag"))
+                compileShader(GL_VERTEX_SHADER, shaderSourceLoader.load("shaders/debris.vert")),
+                compileShader(GL_FRAGMENT_SHADER, shaderSourceLoader.load("shaders/debris.frag"))
         );
         cacheComputeUniformLocations();
         cacheQuadUniformLocations();
@@ -505,20 +503,20 @@ public class Engine {
         cacheDebrisUniformLocations();
         chunkBatcher = new ChunkBatcher();
         debrisRenderer = new VoxelDebrisRenderer();
-        debugRenderer = new DebugRenderer(this::loadResource);
+        debugRenderer = new DebugRenderer(shaderSourceLoader::load);
         initDynamicLights();
 
         vaoQuad = glGenVertexArrays();
         createOutputTexture();
 
         generator = new WorldGenerator(1337L, 62);
-        viewDistanceChunks = determineViewDistanceChunks();
+        EngineConfig config = EngineConfig.load();
+        viewDistanceChunks = config.viewDistanceChunks();
         streamingRequestRadiusChunks = viewDistanceChunks + REGION_PREFETCH_MARGIN_CHUNKS;
         unloadDistanceChunks = streamingRequestRadiusChunks + 1;
-        int chunkCacheSize = determineChunkCacheSize();
-        worldStorage = new WorldStorage(determineWorldDirectory());
-        chunkManager = new ChunkManager(generator, chunkCacheSize, worldStorage);
-        chunkIntegrationBudget = determineChunkIntegrationBudget();
+        worldStorage = new WorldStorage(config.worldDirectory());
+        chunkManager = new ChunkManager(generator, config.chunkCacheSize(), worldStorage);
+        chunkIntegrationBudget = config.chunkIntegrationBudget();
         System.out.println("[Engine] Chunk integration budget set to " + chunkIntegrationBudget + " per frame");
         System.out.println("[Engine] Chunk cache capacity set to " + chunkManager.getMaxLoaded() + " chunks");
 
@@ -528,10 +526,10 @@ public class Engine {
         int topY = findTopSolidY(chunkManager, spawnX, spawnZ);
         camera.position.set(spawnX + 0.5f, topY + 2.5f, spawnZ + 0.5f);
 
-        int regionSizeXZ = determineActiveRegionSizeXZ();
-        int regionSizeY = determineActiveRegionHeight();
+        int regionSizeXZ = config.activeRegionSizeXZ();
+        int regionSizeY = config.activeRegionHeight();
         region = new ActiveRegion(chunkManager, regionSizeXZ, regionSizeY, regionSizeXZ);
-        activeRegionMargin = computeActiveRegionMargin(regionSizeXZ, regionSizeY);
+        activeRegionMargin = config.activeRegionMargin();
         giVolume = new LightPropagationVolume(4);
         int rw = Math.max(1, (int) (width * resolutionScale));
         int rh = Math.max(1, (int) (height * resolutionScale));
@@ -561,170 +559,6 @@ public class Engine {
         resetPrefetchBounds();
         lastPrefetchPosition.set(camera.position);
         prefetchActiveRegionPadding();
-    }
-
-    private int determineChunkCacheSize() {
-        String configured = System.getProperty("voxel.maxChunks");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("VOXEL_MAX_CHUNKS");
-        }
-        if (configured != null) {
-            try {
-                int parsed = Integer.parseInt(configured.trim());
-                if (parsed > 0) {
-                    return parsed;
-                }
-                System.err.println("[Engine] Ignoring non-positive chunk cache override: " + configured);
-            } catch (NumberFormatException ex) {
-                System.err.println("[Engine] Failed to parse chunk cache override '" + configured + "': " + ex.getMessage());
-            }
-        }
-
-        long chunkBytes = (long) Chunk.SX * Chunk.SY * Chunk.SZ * Integer.BYTES;
-        long maxMemory = Runtime.getRuntime().maxMemory();
-        if (maxMemory <= 0 || maxMemory == Long.MAX_VALUE) {
-            long total = Runtime.getRuntime().totalMemory();
-            if (total > 0 && total != Long.MAX_VALUE) {
-                maxMemory = total;
-            }
-        }
-
-        if (maxMemory <= 0 || maxMemory == Long.MAX_VALUE) {
-            return ChunkManager.DEFAULT_CACHE_SIZE;
-        }
-
-        long budget = java.lang.Math.max(maxMemory / 5, 128L << 20);
-        long computed = budget / chunkBytes;
-        if (computed <= 0) {
-            return ChunkManager.DEFAULT_CACHE_SIZE;
-        }
-
-        long capped = java.lang.Math.min(Integer.MAX_VALUE, computed);
-        return (int) java.lang.Math.max(ChunkManager.MIN_CACHE_SIZE, capped);
-    }
-
-    private int determineViewDistanceChunks() {
-        String configured = System.getProperty("voxel.viewDistance");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("VOXEL_VIEW_DISTANCE");
-        }
-        if (configured != null) {
-            try {
-                int parsed = Integer.parseInt(configured.trim());
-                if (parsed > 0) {
-                    return java.lang.Math.max(4, java.lang.Math.min(64, parsed));
-                }
-                System.err.println("[Engine] Ignoring non-positive view distance override: " + configured);
-            } catch (NumberFormatException ex) {
-                System.err.println("[Engine] Failed to parse view distance '" + configured + "': " + ex.getMessage());
-            }
-        }
-        return 8;
-    }
-
-    private int determineActiveRegionSizeXZ() {
-        String configured = System.getProperty("voxel.activeRegionSize");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("VOXEL_ACTIVE_REGION_SIZE");
-        }
-        if (configured != null) {
-            try {
-                int parsed = Integer.parseInt(configured.trim());
-                if (parsed > 0) {
-                    return alignToChunkMultiple(parsed);
-                }
-                System.err.println("[Engine] Ignoring non-positive active region size override: " + configured);
-            } catch (NumberFormatException ex) {
-                System.err.println("[Engine] Failed to parse active region size '" + configured + "': " + ex.getMessage());
-            }
-        }
-        int base = Chunk.SX * (viewDistanceChunks * 2 + 3);
-        int fallback = 128;
-        int auto = java.lang.Math.max(fallback, base);
-        int maxAuto = Chunk.SX * 32; // Cap to keep memory reasonable (~512 blocks)
-        auto = java.lang.Math.min(auto, maxAuto);
-        return alignToChunkMultiple(auto);
-    }
-
-    private int determineActiveRegionHeight() {
-        String configured = System.getProperty("voxel.activeRegionHeight");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("VOXEL_ACTIVE_REGION_HEIGHT");
-        }
-        if (configured != null) {
-            try {
-                int parsed = Integer.parseInt(configured.trim());
-                if (parsed > 0) {
-                    return java.lang.Math.max(64, java.lang.Math.min(Chunk.SY, parsed));
-                }
-                System.err.println("[Engine] Ignoring non-positive active region height override: " + configured);
-            } catch (NumberFormatException ex) {
-                System.err.println("[Engine] Failed to parse active region height '" + configured + "': " + ex.getMessage());
-            }
-        }
-        return 128;
-    }
-
-    private int computeActiveRegionMargin(int regionSize, int regionHeight) {
-        int margin = regionSize / 6;
-        margin = java.lang.Math.max(margin, Chunk.SX);
-        margin = java.lang.Math.max(margin, 24);
-        int maxMargin = regionSize / 2 - Chunk.SX;
-        if (maxMargin > 0) {
-            margin = java.lang.Math.min(margin, maxMargin);
-        }
-        if (regionHeight > 0) {
-            int verticalMax = regionHeight / 2 - 4;
-            if (verticalMax > 0) {
-                margin = java.lang.Math.min(margin, verticalMax);
-            }
-        }
-        return margin;
-    }
-
-    private int alignToChunkMultiple(int blocks) {
-        if (blocks <= 0) {
-            return Chunk.SX;
-        }
-        int remainder = blocks % Chunk.SX;
-        if (remainder != 0) {
-            blocks += Chunk.SX - remainder;
-        }
-        return java.lang.Math.max(Chunk.SX, blocks);
-    }
-
-    private Path determineWorldDirectory() {
-        String configured = System.getProperty("voxel.worldDir");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("VOXEL_WORLD_DIR");
-        }
-        if (configured != null && !configured.isBlank()) {
-            try {
-                return Path.of(configured.trim());
-            } catch (RuntimeException ex) {
-                System.err.println("[Engine] Failed to resolve world directory '" + configured + "': " + ex.getMessage());
-            }
-        }
-        return Path.of("world");
-    }
-
-    private int determineChunkIntegrationBudget() {
-        String configured = System.getProperty("voxel.chunksPerFrame");
-        if (configured == null || configured.isBlank()) {
-            configured = System.getenv("VOXEL_CHUNKS_PER_FRAME");
-        }
-        if (configured != null) {
-            try {
-                int parsed = Integer.parseInt(configured.trim());
-                if (parsed > 0) {
-                    return parsed;
-                }
-                System.err.println("[Engine] Ignoring non-positive chunk integration budget override: " + configured);
-            } catch (NumberFormatException ex) {
-                System.err.println("[Engine] Failed to parse chunk integration override '" + configured + "': " + ex.getMessage());
-            }
-        }
-        return 6;
     }
 
     private void cacheComputeUniformLocations() {
