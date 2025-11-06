@@ -1,4 +1,4 @@
-package com.example.voxelrt;
+package com.example.voxelrt.world;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;

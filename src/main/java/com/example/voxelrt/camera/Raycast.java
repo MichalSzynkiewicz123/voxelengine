@@ -1,5 +1,8 @@
-package com.example.voxelrt;
+package com.example.voxelrt.camera;
 
+import com.example.voxelrt.world.Blocks;
+import com.example.voxelrt.world.Chunk;
+import com.example.voxelrt.world.ChunkManager;
 import org.joml.Vector3f;
 
 /**

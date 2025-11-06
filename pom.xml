@@ -155,7 +155,7 @@
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>com.example.voxelrt.Main</mainClass>
+                    <mainClass>com.example.voxelrt.app.Main</mainClass>
                 </configuration>
             </plugin>
             <plugin>
@@ -168,7 +168,7 @@
                     </descriptorRefs>
                     <archive>
                         <manifest>
-                            <mainClass>com.example.voxelrt.Main</mainClass>
+                            <mainClass>com.example.voxelrt.app.Main</mainClass>
                         </manifest>
                     </archive>
                 </configuration>

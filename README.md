@@ -18,6 +18,6 @@
 ### Build
 ```bash
 mvn -q clean package
-mvn -q exec:java -Dexec.mainClass="com.example.voxelrt.Main"
+mvn -q exec:java -Dexec.mainClass="com.example.voxelrt.app.Main"
 ```
 Tip: add `--enable-native-access=ALL-UNNAMED` to VM options for LWJGL on Java 21+/25.

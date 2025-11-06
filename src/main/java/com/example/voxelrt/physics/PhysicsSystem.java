@@ -16,11 +16,11 @@ import com.bulletphysics.dynamics.RigidBodyConstructionInfo;
 import com.bulletphysics.dynamics.constraintsolver.SequentialImpulseConstraintSolver;
 import com.bulletphysics.linearmath.DefaultMotionState;
 import com.bulletphysics.linearmath.Transform;
-import com.example.voxelrt.ActiveRegion;
-import com.example.voxelrt.Blocks;
-import com.example.voxelrt.Chunk;
-import com.example.voxelrt.ChunkManager;
-import com.example.voxelrt.ChunkPos;
+import com.example.voxelrt.world.ActiveRegion;
+import com.example.voxelrt.world.Blocks;
+import com.example.voxelrt.world.Chunk;
+import com.example.voxelrt.world.ChunkManager;
+import com.example.voxelrt.world.ChunkPos;
 import com.example.voxelrt.mesh.ChunkMesh;
 import com.example.voxelrt.mesh.MeshBuilder;
 

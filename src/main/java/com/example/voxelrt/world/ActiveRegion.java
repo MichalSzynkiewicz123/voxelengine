@@ -1,4 +1,6 @@
-package com.example.voxelrt;
+package com.example.voxelrt.world;
+
+import com.example.voxelrt.camera.Frustum;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;

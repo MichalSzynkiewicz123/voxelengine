@@ -1,4 +1,4 @@
-package com.example.voxelrt;
+package com.example.voxelrt.world;
 
 import com.example.voxelrt.mesh.ChunkMesh;
 

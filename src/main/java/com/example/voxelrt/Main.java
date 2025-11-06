@@ -1,7 +1,0 @@
-package com.example.voxelrt;
-
-public class Main {
-    public static void main(String[] a) {
-        new Engine().run();
-    }
-}

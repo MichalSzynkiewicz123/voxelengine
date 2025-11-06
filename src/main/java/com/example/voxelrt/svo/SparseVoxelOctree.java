@@ -1,7 +1,7 @@
 package com.example.voxelrt.svo;
 
-import com.example.voxelrt.Blocks;
-import com.example.voxelrt.Chunk;
+import com.example.voxelrt.world.Blocks;
+import com.example.voxelrt.world.Chunk;
 
 import java.util.Objects;
 

@@ -1,7 +1,7 @@
 package com.example.voxelrt.render;
 
-import com.example.voxelrt.ActiveRegion;
-import com.example.voxelrt.Blocks;
+import com.example.voxelrt.world.ActiveRegion;
+import com.example.voxelrt.world.Blocks;
 import org.joml.Vector3f;
 import org.joml.Vector3fc;
 import org.lwjgl.BufferUtils;

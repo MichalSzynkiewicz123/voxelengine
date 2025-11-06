@@ -1,4 +1,4 @@
-package com.example.voxelrt;
+package com.example.voxelrt.util.concurrent;
 
 import java.time.Duration;
 import java.util.Objects;
