@@ -32,6 +32,18 @@ public final class Blocks {
      * Snow block used for high elevations.
      */
     public static final int SNOW = 5;
+    /**
+     * Trunk block for trees and wooden structures.
+     */
+    public static final int LOG = 6;
+    /**
+     * Leaf block used for foliage. Considered non-solid for lighting purposes.
+     */
+    public static final int LEAVES = 7;
+    /**
+     * Simple desert plant used for cacti.
+     */
+    public static final int CACTUS = 8;
 
     public static org.joml.Vector3f color(int id) {
         return switch (id) {
@@ -40,7 +52,23 @@ public final class Blocks {
             case STONE -> new org.joml.Vector3f(0.50f, 0.50f, 0.50f);
             case SAND -> new org.joml.Vector3f(0.82f, 0.75f, 0.52f);
             case SNOW -> new org.joml.Vector3f(0.90f, 0.92f, 0.95f);
+            case LOG -> new org.joml.Vector3f(0.43f, 0.29f, 0.18f);
+            case LEAVES -> new org.joml.Vector3f(0.21f, 0.45f, 0.15f);
+            case CACTUS -> new org.joml.Vector3f(0.29f, 0.46f, 0.28f);
             default -> new org.joml.Vector3f();
+        };
+    }
+
+    /**
+     * Opacity used by the global illumination system when determining how much a block occludes
+     * light within a propagation cell. 0 means the voxel is fully transparent, 1 means it is
+     * completely opaque.
+     */
+    public static float giOpacity(int id) {
+        return switch (id) {
+            case AIR -> 0f;
+            case LEAVES -> 0.15f;
+            default -> 1f;
         };
     }
 

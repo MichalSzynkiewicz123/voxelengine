@@ -439,6 +439,9 @@ vec3 blockColor(uint id){
     if (id==3u) return vec3(0.50, 0.50, 0.50);// STONE
     if (id==4u) return vec3(0.82, 0.76, 0.52);// SAND
     if (id==5u) return vec3(0.95, 0.95, 0.97);// SNOW
+    if (id==6u) return vec3(0.43, 0.29, 0.18);// LOG
+    if (id==7u) return vec3(0.21, 0.45, 0.15);// LEAVES
+    if (id==8u) return vec3(0.29, 0.46, 0.28);// CACTUS
     return vec3(0.0);
 }
 
@@ -448,6 +451,9 @@ float blockReflectivity(uint id){
     if (id==4u) return 0.08;// sand
     if (id==1u) return 0.06;// grass
     if (id==2u) return 0.04;// dirt
+    if (id==6u) return 0.07;// log
+    if (id==7u) return 0.03;// leaves
+    if (id==8u) return 0.05;// cactus
     return 0.05;
 }
 
