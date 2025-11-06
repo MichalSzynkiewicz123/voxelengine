@@ -205,31 +205,31 @@ public class Chunk {
                 }
                 switch (column.biome()) {
                     case FOREST -> {
-                        if (surface == Blocks.GRASS && rng.nextFloat() < 0.08f) {
+                        if (surface == Blocks.GRASS && rng.nextFloat() < 0.04f) {
                             placeTree(rng, x, localY + 1, z);
-                        } else if (surface == Blocks.GRASS && rng.nextFloat() < 0.10f) {
+                        } else if (surface == Blocks.GRASS && rng.nextFloat() < 0.05f) {
                             placeShrub(rng, x, localY + 1, z);
                         }
                     }
                     case PLAINS -> {
-                        if (surface == Blocks.GRASS && rng.nextFloat() < 0.025f) {
+                        if (surface == Blocks.GRASS && rng.nextFloat() < 0.0125f) {
                             placeTree(rng, x, localY + 1, z);
-                        } else if (surface == Blocks.GRASS && rng.nextFloat() < 0.06f) {
+                        } else if (surface == Blocks.GRASS && rng.nextFloat() < 0.03f) {
                             placeShrub(rng, x, localY + 1, z);
                         }
                     }
                     case DESERT -> {
-                        if (surface == Blocks.SAND && rng.nextFloat() < 0.05f) {
+                        if (surface == Blocks.SAND && rng.nextFloat() < 0.025f) {
                             placeCactus(rng, x, localY + 1, z);
                         }
                     }
                     case MOUNTAINS -> {
-                        if (surface == Blocks.STONE && rng.nextFloat() < 0.04f) {
+                        if (surface == Blocks.STONE && rng.nextFloat() < 0.02f) {
                             placeRock(rng, x, localY + 1, z);
                         }
                     }
                     case TUNDRA -> {
-                        if (surface == Blocks.SNOW && rng.nextFloat() < 0.02f) {
+                        if (surface == Blocks.SNOW && rng.nextFloat() < 0.01f) {
                             placeRock(rng, x, localY + 1, z);
                         }
                     }
