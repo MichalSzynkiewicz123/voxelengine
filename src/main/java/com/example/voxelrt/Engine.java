@@ -4,6 +4,7 @@ import com.example.voxelrt.mesh.ChunkBatcher;
 import com.example.voxelrt.mesh.ChunkMesh;
 import com.example.voxelrt.mesh.MeshBuilder;
 import com.example.voxelrt.physics.PhysicsSystem;
+import com.example.voxelrt.physics.VoxelDebrisRenderer;
 
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -33,7 +34,7 @@ public class Engine {
     private int width = 1280, height = 720;
     private float resolutionScale = 1.0f;
 
-    private int computeProgram, quadProgram, meshProgram;
+    private int computeProgram, quadProgram, meshProgram, debrisProgram;
     private int locComputeSkyModel = -1;
     private int locComputeTurbidity = -1;
     private int locComputeSkyIntensity = -1;
@@ -83,11 +84,15 @@ public class Engine {
     private int locMeshProj = -1;
     private int locMeshView = -1;
     private int locMeshSunDir = -1;
+    private int locDebrisProj = -1;
+    private int locDebrisView = -1;
+    private int locDebrisSunDir = -1;
     private int outputTex, vaoQuad;
     private int ssboVoxels;
     private int ssboVoxelsCoarse;
     private int ssboVoxelsFar;
     private ChunkBatcher chunkBatcher;
+    private VoxelDebrisRenderer debrisRenderer;
 
     private Camera camera = new Camera(new Vector3f(64, 120, 64));
     private boolean mouseCaptured = true;
@@ -266,12 +271,26 @@ public class Engine {
             Raycast.Hit hit = Raycast.raycast(chunkManager, origin, dir, 8f);
             if (hit != null) {
                 if (button == GLFW_MOUSE_BUTTON_LEFT) {
-                    chunkManager.setEdit(hit.x, hit.y, hit.z, Blocks.AIR);
-                    region.setVoxelWorld(hit.x, hit.y, hit.z, Blocks.AIR);
+                    int previous = chunkManager.sample(hit.x, hit.y, hit.z);
+                    if (previous != Blocks.AIR) {
+                        chunkManager.setEdit(hit.x, hit.y, hit.z, Blocks.AIR);
+                        region.setVoxelWorld(hit.x, hit.y, hit.z, Blocks.AIR);
+                        if (physicsSystem != null) {
+                            Vector3f impulse = new Vector3f(dir).mul(2.4f);
+                            impulse.y += 1.1f;
+                            physicsSystem.onVoxelEdited(hit.x, hit.y, hit.z, previous, Blocks.AIR, impulse);
+                        }
+                    }
                 } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
                     int px = hit.x + hit.nx, py = hit.y + hit.ny, pz = hit.z + hit.nz;
-                    chunkManager.setEdit(px, py, pz, placeBlock);
-                    region.setVoxelWorld(px, py, pz, placeBlock);
+                    int previous = chunkManager.sample(px, py, pz);
+                    if (previous != placeBlock) {
+                        chunkManager.setEdit(px, py, pz, placeBlock);
+                        region.setVoxelWorld(px, py, pz, placeBlock);
+                        if (physicsSystem != null) {
+                            physicsSystem.onVoxelEdited(px, py, pz, previous, placeBlock, null);
+                        }
+                    }
                 }
             }
         });
@@ -363,10 +382,16 @@ public class Engine {
                 compileShader(GL_VERTEX_SHADER, loadResource("shaders/chunk.vert")),
                 compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/chunk.frag"))
         );
+        debrisProgram = linkProgram(
+                compileShader(GL_VERTEX_SHADER, loadResource("shaders/debris.vert")),
+                compileShader(GL_FRAGMENT_SHADER, loadResource("shaders/debris.frag"))
+        );
         cacheComputeUniformLocations();
         cacheQuadUniformLocations();
         cacheMeshUniformLocations();
+        cacheDebrisUniformLocations();
         chunkBatcher = new ChunkBatcher();
+        debrisRenderer = new VoxelDebrisRenderer();
         initDynamicLights();
 
         vaoQuad = glGenVertexArrays();
@@ -506,6 +531,12 @@ public class Engine {
         locMeshSunDir = glGetUniformLocation(meshProgram, "uSunDir");
     }
 
+    private void cacheDebrisUniformLocations() {
+        locDebrisProj = glGetUniformLocation(debrisProgram, "uProj");
+        locDebrisView = glGetUniformLocation(debrisProgram, "uView");
+        locDebrisSunDir = glGetUniformLocation(debrisProgram, "uSunDir");
+    }
+
     private void initDynamicLights() {
         for (int i = 0; i < dynamicLights.length; i++) {
             dynamicLights[i] = new DynamicLight();
@@ -631,6 +662,31 @@ public class Engine {
             chunkBatcher.drawBatched(drawList);
         }
         glUseProgram(0);
+    }
+
+    private void renderDebris(Matrix4f proj, Matrix4f view) {
+        if (physicsSystem == null || debrisRenderer == null) {
+            return;
+        }
+        java.util.List<PhysicsSystem.DebrisInstance> instances = physicsSystem.collectDebrisInstances();
+        if (instances.isEmpty()) {
+            return;
+        }
+        glViewport(0, 0, width, height);
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(debrisProgram);
+        uploadMatrix(locDebrisProj, proj);
+        uploadMatrix(locDebrisView, view);
+        Vector3f sunDir = new Vector3f(-0.6f, -1.0f, -0.3f).normalize();
+        if (locDebrisSunDir >= 0) {
+            glUniform3f(locDebrisSunDir, sunDir.x, sunDir.y, sunDir.z);
+        }
+        debrisRenderer.drawInstances(instances);
+        glUseProgram(0);
+        glDisable(GL_BLEND);
     }
 
     private java.util.List<Chunk> filterVisibleChunks(java.util.List<Chunk> chunks, Frustum frustum) {
@@ -830,6 +886,7 @@ public class Engine {
             // Present
             if (rasterEnabled) {
                 renderChunkMeshes(proj, view, visibleChunks);
+                renderDebris(proj, view);
             } else {
                 glDisable(GL_DEPTH_TEST);
                 glDisable(GL_CULL_FACE);
@@ -844,6 +901,7 @@ public class Engine {
                 glDrawArrays(GL_TRIANGLES, 0, 3);
                 glEnable(GL_DEPTH_TEST);
                 glEnable(GL_CULL_FACE);
+                renderDebris(proj, view);
             }
 
             if (now - lastPrint > 1.0) {
@@ -1074,10 +1132,14 @@ public class Engine {
         glDeleteProgram(computeProgram);
         glDeleteProgram(quadProgram);
         glDeleteProgram(meshProgram);
+        glDeleteProgram(debrisProgram);
         glDeleteTextures(outputTex);
         glDeleteVertexArrays(vaoQuad);
         if (chunkBatcher != null) {
             chunkBatcher.close();
+        }
+        if (debrisRenderer != null) {
+            debrisRenderer.close();
         }
         if (physicsSystem != null) {
             physicsSystem.close();
