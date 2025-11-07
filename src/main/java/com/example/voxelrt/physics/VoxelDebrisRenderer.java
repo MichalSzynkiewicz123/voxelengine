@@ -7,6 +7,12 @@ import java.util.List;
 
 import static org.lwjgl.opengl.GL46C.*;
 
+/**
+ * Renders instanced cube fragments that represent blocks shattered by the physics system.
+ * <p>
+ * The renderer manages a reusable VAO/VBO pair and updates instance attributes every frame
+ * so that debris pieces can be animated entirely on the GPU.
+ */
 public final class VoxelDebrisRenderer implements AutoCloseable {
     private static final int FLOATS_PER_VERTEX = 6;
     private static final int VERTEX_COUNT = 36;

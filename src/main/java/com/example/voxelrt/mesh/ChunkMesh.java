@@ -6,6 +6,12 @@ import java.nio.FloatBuffer;
 
 import static org.lwjgl.opengl.GL46C.*;
 
+/**
+ * Immutable GPU mesh produced from a chunk's greedy meshing output.
+ * <p>
+ * Each instance encodes the bounds and face direction of a visible quad which allows
+ * the renderer to draw entire chunks using instancing-friendly attribute layouts.
+ */
 public final class ChunkMesh {
     private static final int FLOATS_PER_INSTANCE = 9;
     private static final int BASE_VERTEX_COUNT = 6;

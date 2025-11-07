@@ -8,6 +8,12 @@ import com.example.voxelrt.world.ChunkPos;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Greedy meshing utility that converts a chunk's voxel data into instanced quad batches.
+ * <p>
+ * The builder scans the chunk along each axis, merges contiguous faces with the same
+ * block id and emits compact instance data consumed by {@link ChunkMesh}.
+ */
 public final class MeshBuilder {
     private static final int FLOATS_PER_INSTANCE = 9;
 
@@ -214,6 +220,9 @@ public final class MeshBuilder {
                                 int axis, boolean positive, int blockId) {
     }
 
+    /**
+     * Lightweight value object describing the generated instance buffer.
+     */
     public record MeshData(float[] instanceData, int instanceCount) {
         public static MeshData empty() {
             return new MeshData(new float[0], 0);

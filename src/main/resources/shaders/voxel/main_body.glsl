@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------------------------
+// Primary compute shader body that ray marches the voxel world and shades visible surfaces.
+// Handles LOD transitions, dynamic lighting and secondary effects before writing to uOutput.
+// ---------------------------------------------------------------------------------------------
 // --------------------------- main ---------------------------
 void main(){
     ivec2 gid = ivec2(gl_GlobalInvocationID.xy);

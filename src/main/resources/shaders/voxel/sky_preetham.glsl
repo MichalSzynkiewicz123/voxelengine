@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------------------------
+// Implementation of the Preetham daylight sky model used for environment lighting.
+// Generates Perez coefficients and converts chromaticity back into linear sRGB values.
+// ---------------------------------------------------------------------------------------------
 // -------- Preetham daylight (no vec5!) --------
 // Perez coefficients (A..E) via out params
 void coeffsY(float T, out float A, out float B, out float C, out float D, out float E){

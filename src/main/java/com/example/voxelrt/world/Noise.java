@@ -2,6 +2,11 @@ package com.example.voxelrt.world;
 
 import java.util.Random;
 
+/**
+ * Simple Perlin noise generator used by the terrain system for height fields and caves.
+ * <p>
+ * The implementation exposes both raw noise and fractal variants for 2D and 3D sampling.
+ */
 public class Noise {
     private final int[] perm = new int[512];
 
