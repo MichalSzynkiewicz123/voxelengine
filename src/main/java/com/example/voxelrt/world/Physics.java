@@ -2,6 +2,9 @@ package com.example.voxelrt.world;
 
 import org.joml.Vector3f;
 
+/**
+ * CPU-side collision helpers used for simple physics interactions such as player movement.
+ */
 public class Physics {
     public static boolean isSolid(ChunkManager cm, int x, int y, int z) {
         if (y < 0 || y >= Chunk.SY) return true;

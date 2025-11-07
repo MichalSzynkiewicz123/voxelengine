@@ -1,3 +1,6 @@
+// ---------------------------------------------------------------------------------------------
+// Mathematical helpers and small utility functions shared across voxel shader stages.
+// ---------------------------------------------------------------------------------------------
 // -------- constants / utils --------
 const float PI  = 3.14159265359;
 const float TAU = 6.28318530718;

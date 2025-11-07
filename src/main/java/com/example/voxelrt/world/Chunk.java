@@ -4,6 +4,13 @@ import com.example.voxelrt.mesh.ChunkMesh;
 
 import java.util.Random;
 
+/**
+ * Dense voxel container representing a 16×256×16 column of the world.
+ * <p>
+ * Chunks lazily allocate 16-voxel-tall sections so that empty areas consume minimal
+ * memory. The class also tracks render meshes and acts as the integration point
+ * between procedural generation, physics extraction and GPU streaming.
+ */
 public class Chunk {
     public static final int SX = 16, SY = 256, SZ = 16;
     public static final int TOTAL_VOXELS = SX * SY * SZ;
@@ -414,6 +421,9 @@ public class Chunk {
         meshDirty = true;
     }
 
+    /**
+     * Compact storage for a 16-voxel-tall slice of the chunk volume.
+     */
     private static final class Section {
         final byte[] voxels = new byte[SX * SECTION_HEIGHT * SZ];
         int nonAir = 0;
@@ -424,6 +434,9 @@ public class Chunk {
         }
     }
 
+    /**
+     * Snapshot of the chunk's dense voxel buffer used for serialization and caching.
+     */
     public record DenseData(byte[] voxels, int nonAir) {
     }
 }

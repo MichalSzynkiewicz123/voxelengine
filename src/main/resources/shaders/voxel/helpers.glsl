@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------------------------
+// Helper routines for sampling voxel data and performing DDA traversal.
+// Provides utility functions for multi-resolution occupancy checks and ray marching.
+// ---------------------------------------------------------------------------------------------
 // -------- voxel helpers --------
 bool inBounds(ivec3 p){
     return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, uWorldSize));

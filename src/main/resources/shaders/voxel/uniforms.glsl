@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------------------------
+// Common uniforms shared by the voxel compute pipeline.
+// Declares camera state, lighting controls and tuning knobs consumed by the ray marcher.
+// ---------------------------------------------------------------------------------------------
 // -------- uniforms --------
 uniform ivec3 uWorldSize;
 uniform ivec3 uWorldSizeCoarse;
