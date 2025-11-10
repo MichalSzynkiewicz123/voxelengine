@@ -1,6 +1,7 @@
 package com.example.voxelrt.app;
 
 import com.example.voxelrt.util.ResourceUtils;
+import org.joml.Vector3f;
 import org.lwjgl.glfw.GLFWErrorCallback;
 import org.lwjgl.opengl.GL;
 
@@ -29,6 +30,27 @@ public final class Engine {
     private int program;
     private int vao;
     private long startTime;
+    private double lastFrameTime;
+
+    private int locResolution;
+    private int locTime;
+    private int locCameraPos;
+    private int locCameraForward;
+    private int locCameraRight;
+    private int locCameraUp;
+
+    private final boolean[] keyDown = new boolean[GLFW_KEY_LAST + 1];
+    private boolean mouseCaptured = true;
+    private boolean firstMouseInput = true;
+    private double lastMouseX;
+    private double lastMouseY;
+    private float yaw = (float) Math.toRadians(-90.0);
+    private float pitch = 0.0f;
+
+    private final Vector3f cameraPos = new Vector3f(0.0f, 1.5f, 5.0f);
+    private final Vector3f cameraForward = new Vector3f(0.0f, 0.0f, -1.0f);
+    private final Vector3f cameraRight = new Vector3f(1.0f, 0.0f, 0.0f);
+    private final Vector3f cameraUp = new Vector3f(0.0f, 1.0f, 0.0f);
 
     public void run() {
         initWindow();
@@ -55,10 +77,62 @@ public final class Engine {
         glfwSwapInterval(1);
         glfwSetKeyCallback(window, (win, key, scancode, action, mods) -> {
             if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-                glfwSetWindowShouldClose(win, true);
+                if (mouseCaptured) {
+                    mouseCaptured = false;
+                    glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                } else {
+                    glfwSetWindowShouldClose(win, true);
+                }
+            }
+            if (key == GLFW_KEY_TAB && action == GLFW_PRESS && !mouseCaptured) {
+                mouseCaptured = true;
+                firstMouseInput = true;
+                glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            }
+            if (key >= 0 && key < keyDown.length) {
+                if (action == GLFW_PRESS) {
+                    keyDown[key] = true;
+                } else if (action == GLFW_RELEASE) {
+                    keyDown[key] = false;
+                }
             }
         });
+        glfwSetCursorPosCallback(window, (win, xpos, ypos) -> {
+            if (!mouseCaptured) {
+                return;
+            }
+            if (firstMouseInput) {
+                lastMouseX = xpos;
+                lastMouseY = ypos;
+                firstMouseInput = false;
+                return;
+            }
+            double dx = xpos - lastMouseX;
+            double dy = ypos - lastMouseY;
+            lastMouseX = xpos;
+            lastMouseY = ypos;
+
+            float sensitivity = 0.0025f;
+            yaw += dx * sensitivity;
+            pitch -= dy * sensitivity;
+            float maxPitch = (float) Math.toRadians(89.0);
+            if (pitch > maxPitch) {
+                pitch = maxPitch;
+            } else if (pitch < -maxPitch) {
+                pitch = -maxPitch;
+            }
+        });
+        glfwSetMouseButtonCallback(window, (win, button, action, mods) -> {
+            if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS && !mouseCaptured) {
+                mouseCaptured = true;
+                firstMouseInput = true;
+                glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            }
+        });
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         startTime = System.nanoTime();
+        glfwSetTime(0.0);
+        lastFrameTime = glfwGetTime();
     }
 
     private void initOpenGL() {
@@ -72,11 +146,21 @@ public final class Engine {
         String fragmentSource = ResourceUtils.loadTextResource("shaders/raymarch.frag");
         int fs = compileShader(GL_FRAGMENT_SHADER, fragmentSource);
         program = linkProgram(vs, fs);
+        locResolution = glGetUniformLocation(program, "u_resolution");
+        locTime = glGetUniformLocation(program, "u_time");
+        locCameraPos = glGetUniformLocation(program, "u_cameraPos");
+        locCameraForward = glGetUniformLocation(program, "u_cameraForward");
+        locCameraRight = glGetUniformLocation(program, "u_cameraRight");
+        locCameraUp = glGetUniformLocation(program, "u_cameraUp");
     }
 
     private void loop() {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+            double now = glfwGetTime();
+            float deltaTime = (float) (now - lastFrameTime);
+            lastFrameTime = now;
+            updateCamera(deltaTime);
             int[] width = new int[1];
             int[] height = new int[1];
             glfwGetFramebufferSize(window, width, height);
@@ -84,11 +168,62 @@ public final class Engine {
             glClear(GL_COLOR_BUFFER_BIT);
 
             glUseProgram(program);
-            glUniform2f(glGetUniformLocation(program, "u_resolution"), width[0], height[0]);
+            glUniform2f(locResolution, width[0], height[0]);
             float timeSeconds = (System.nanoTime() - startTime) / 1_000_000_000.0f;
-            glUniform1f(glGetUniformLocation(program, "u_time"), timeSeconds);
+            glUniform1f(locTime, timeSeconds);
+            glUniform3f(locCameraPos, cameraPos.x, cameraPos.y, cameraPos.z);
+            glUniform3f(locCameraForward, cameraForward.x, cameraForward.y, cameraForward.z);
+            glUniform3f(locCameraRight, cameraRight.x, cameraRight.y, cameraRight.z);
+            glUniform3f(locCameraUp, cameraUp.x, cameraUp.y, cameraUp.z);
             glDrawArrays(GL_TRIANGLES, 0, 3);
             glfwSwapBuffers(window);
+        }
+    }
+
+    private void updateCamera(float deltaTime) {
+        Vector3f worldUp = new Vector3f(0.0f, 1.0f, 0.0f);
+        cameraForward.set(
+                (float) (Math.cos(pitch) * Math.sin(yaw)),
+                (float) Math.sin(pitch),
+                (float) (Math.cos(pitch) * Math.cos(yaw))
+        ).normalize();
+        cameraRight.set(cameraForward).cross(worldUp).normalize();
+        cameraUp.set(cameraRight).cross(cameraForward).normalize();
+
+        Vector3f move = new Vector3f();
+        Vector3f forwardXZ = new Vector3f(cameraForward.x, 0.0f, cameraForward.z);
+        if (forwardXZ.lengthSquared() > 0.0f) {
+            forwardXZ.normalize();
+        }
+        Vector3f rightXZ = new Vector3f(cameraRight.x, 0.0f, cameraRight.z);
+        if (rightXZ.lengthSquared() > 0.0f) {
+            rightXZ.normalize();
+        }
+
+        if (keyDown[GLFW_KEY_W]) {
+            move.add(forwardXZ);
+        }
+        if (keyDown[GLFW_KEY_S]) {
+            move.sub(forwardXZ);
+        }
+        if (keyDown[GLFW_KEY_A]) {
+            move.sub(rightXZ);
+        }
+        if (keyDown[GLFW_KEY_D]) {
+            move.add(rightXZ);
+        }
+        if (keyDown[GLFW_KEY_SPACE]) {
+            move.y += 1.0f;
+        }
+        if (keyDown[GLFW_KEY_LEFT_CONTROL] || keyDown[GLFW_KEY_C]) {
+            move.y -= 1.0f;
+        }
+
+        if (move.lengthSquared() > 0.0f) {
+            move.normalize();
+            float speed = keyDown[GLFW_KEY_LEFT_SHIFT] ? 6.0f : 3.0f;
+            move.mul(speed * deltaTime);
+            cameraPos.add(move);
         }
     }
 

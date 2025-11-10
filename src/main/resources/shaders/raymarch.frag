@@ -2,6 +2,10 @@
 
 uniform vec2 u_resolution;
 uniform float u_time;
+uniform vec3 u_cameraPos;
+uniform vec3 u_cameraForward;
+uniform vec3 u_cameraRight;
+uniform vec3 u_cameraUp;
 
 layout(location = 0) out vec4 fragColor;
 
@@ -65,12 +69,8 @@ vec3 estimateNormal(vec3 p) {
 
 void main() {
     vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;
-    vec3 ro = vec3(0.0, 2.5, u_time * 0.5);
-    vec3 target = vec3(0.0, 1.5, u_time * 0.5 + 1.5);
-    vec3 forward = normalize(target - ro);
-    vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
-    vec3 up = cross(right, forward);
-    vec3 rd = normalize(forward + uv.x * right + uv.y * up);
+    vec3 ro = u_cameraPos;
+    vec3 rd = normalize(u_cameraForward + uv.x * u_cameraRight + uv.y * u_cameraUp);
 
     float d = RayMarch(ro, rd);
     vec3 color = vec3(0.0);
