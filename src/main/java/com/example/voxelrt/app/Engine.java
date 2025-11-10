@@ -81,6 +81,10 @@ public class Engine {
     private int locComputeResolution = -1;
     private int locComputeDebugGradient = -1;
     private int locComputeUseGPUWorld = -1;
+    private int locComputeVoxelSpaceYaw = -1;
+    private int locComputeVoxelSpaceHorizon = -1;
+    private int locComputeVoxelSpaceScale = -1;
+    private int locComputeVoxelSpaceDistance = -1;
     private int locComputeGIEnabled = -1;
     private int locComputeGISampleCount = -1;
     private int locComputeGIMaxDistance = -1;
@@ -591,6 +595,10 @@ public class Engine {
         locComputeResolution = glGetUniformLocation(computeProgram, "uResolution");
         locComputeDebugGradient = glGetUniformLocation(computeProgram, "uDebugGradient");
         locComputeUseGPUWorld = glGetUniformLocation(computeProgram, "uUseGPUWorld");
+        locComputeVoxelSpaceYaw = glGetUniformLocation(computeProgram, "uVoxelSpaceYaw");
+        locComputeVoxelSpaceHorizon = glGetUniformLocation(computeProgram, "uVoxelSpaceHorizon");
+        locComputeVoxelSpaceScale = glGetUniformLocation(computeProgram, "uVoxelSpaceScale");
+        locComputeVoxelSpaceDistance = glGetUniformLocation(computeProgram, "uVoxelSpaceDistance");
         locComputeGIEnabled = glGetUniformLocation(computeProgram, "uGIEnabled");
         locComputeGISampleCount = glGetUniformLocation(computeProgram, "uGISampleCount");
         locComputeGIMaxDistance = glGetUniformLocation(computeProgram, "uGIMaxDistance");
@@ -1285,6 +1293,19 @@ public class Engine {
                 if (locComputeResolution >= 0) glUniform2i(locComputeResolution, rw, rh);
                 if (locComputeDebugGradient >= 0) glUniform1i(locComputeDebugGradient, debugGradient ? 1 : 0);
                 if (locComputeUseGPUWorld >= 0) glUniform1i(locComputeUseGPUWorld, useGPUWorld ? 1 : 0);
+
+                float yawRad = (float) Math.toRadians(camera.yawDeg());
+                float pitchNorm = camera.pitchDeg() / 90f;
+                float baseHorizon = rh * 0.5f;
+                float horizonShift = pitchNorm * (rh * 0.35f);
+                float voxelSpaceHorizon = Math.max(0f, Math.min(rh, baseHorizon - horizonShift));
+                float voxelSpaceScale = Math.max(1f, rh * 0.2f);
+                float regionSpan = Math.min(region.rx, region.rz);
+                float voxelSpaceDistance = Math.max(1f, Math.min(regionSpan * 0.9f, 400f));
+                if (locComputeVoxelSpaceYaw >= 0) glUniform1f(locComputeVoxelSpaceYaw, yawRad);
+                if (locComputeVoxelSpaceHorizon >= 0) glUniform1f(locComputeVoxelSpaceHorizon, voxelSpaceHorizon);
+                if (locComputeVoxelSpaceScale >= 0) glUniform1f(locComputeVoxelSpaceScale, voxelSpaceScale);
+                if (locComputeVoxelSpaceDistance >= 0) glUniform1f(locComputeVoxelSpaceDistance, voxelSpaceDistance);
 
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssboVoxels);
                     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboVoxelsCoarse);
