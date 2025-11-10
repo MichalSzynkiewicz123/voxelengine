@@ -3,6 +3,10 @@
 // Provides utility functions for multi-resolution occupancy checks and ray marching.
 // ---------------------------------------------------------------------------------------------
 // -------- voxel helpers --------
+
+vec3 envSky(vec3 dir){
+    return vec3(0.0);
+}
 bool inBounds(ivec3 p){
     return all(greaterThanEqual(p, ivec3(0))) && all(lessThan(p, uWorldSize));
 }
