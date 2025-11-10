@@ -246,9 +246,9 @@ public class Chunk {
     }
 
     private void placeRock(Random rng, int x, int y, int z) {
-        int width = 2;
-        int depth = 2;
-        int height = 2;
+        int width = 1;
+        int depth = 1;
+        int height = 1;
         for (int dy = 0; dy < height; dy++) {
             int ay = y + dy;
             if (ay < 0 || ay >= SY) {
@@ -276,16 +276,13 @@ public class Chunk {
         if (y <= 0 || y >= SY) return;
         if (get(x, y, z) != Blocks.AIR) return;
         set(x, y, z, Blocks.LOG);
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
+        for (int dx = -1; dx <= 0; dx++) {
+            for (int dz = -1; dz <= 0; dz++) {
                 int ax = x + dx;
                 int az = z + dz;
                 if (ax < 0 || ax >= SX || az < 0 || az >= SZ) continue;
                 int ay = y + 1;
                 if (ay >= SY) continue;
-                if (java.lang.Math.abs(dx) == 1 && java.lang.Math.abs(dz) == 1 && rng.nextBoolean()) {
-                    continue;
-                }
                 if (get(ax, ay, az) == Blocks.AIR) {
                     set(ax, ay, az, Blocks.LEAVES);
                 }
@@ -300,7 +297,7 @@ public class Chunk {
         if (x <= 0 || x >= SX - 1 || z <= 0 || z >= SZ - 1) {
             return;
         }
-        int height = 2 + rng.nextInt(3);
+        int height = 4;
         if (y + height >= SY) {
             return;
         }
