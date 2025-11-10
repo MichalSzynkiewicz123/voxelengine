@@ -19,6 +19,10 @@ uniform float uLodSwitchDistance;
 uniform float uLodSwitchDistanceFar;
 uniform float uLodTransitionBand;
 uniform int   uDebugGradient;
+uniform float uVoxelSpaceYaw;
+uniform float uVoxelSpaceHorizon;
+uniform float uVoxelSpaceScale;
+uniform float uVoxelSpaceDistance;
 
 // Sky model / Preetham
 uniform int   uSkyModel;// 0=gradient, 1=Preetham
