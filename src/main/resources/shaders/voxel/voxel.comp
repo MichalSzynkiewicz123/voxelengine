@@ -1,0 +1,114 @@
+#version 430 core
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba8, binding = 0) uniform writeonly image2D uOutput;
+layout(std430, binding = 0) readonly buffer Voxels { uint data[]; };
+layout(std430, binding = 1) readonly buffer VoxelsCoarse { uint dataCoarse[]; };
+layout(std430, binding = 2) readonly buffer VoxelsFar { uint dataFar[]; };
+
+#include "uniforms.glsl"
+#include "constants.glsl"
+#include "sky_preetham.glsl"
+#include "helpers.glsl"
+
+const float MAX_TRACE_DISTANCE = 512.0;
+const int   MAX_TRACE_STEPS    = 512;
+
+struct HitResult {
+    bool  hit;
+    vec3  positionLocal;
+    vec3  normal;
+    uint  blockId;
+    float distance;
+};
+
+vec3 skyColor(vec3 dir) {
+    return skyGradient(dir);
+}
+
+HitResult marchVoxelWorld(vec3 roLocal, vec3 rd, float tEnter, float tExit) {
+    HitResult result;
+    result.hit = false;
+    result.positionLocal = vec3(0.0);
+    result.normal = vec3(0.0);
+    result.blockId = 0u;
+    result.distance = MAX_TRACE_DISTANCE;
+
+    float startT = max(tEnter, 0.0);
+    float endT = min(tExit, startT + MAX_TRACE_DISTANCE);
+    if (endT <= startT) {
+        return result;
+    }
+
+    vec3 startPos = roLocal + rd * startT;
+    float maxDistance = endT - startT;
+
+    vec3 hitPos;
+    vec3 hitNormal;
+    uint hitId;
+    bool hit = traceVoxel(startPos, rd, maxDistance, MAX_TRACE_STEPS, hitPos, hitNormal, hitId);
+    if (!hit) {
+        return result;
+    }
+
+    result.hit = true;
+    result.positionLocal = hitPos;
+    result.normal = normalize(hitNormal);
+    result.blockId = hitId;
+    vec3 hitWorld = hitPos + vec3(uRegionOrigin);
+    result.distance = distance(hitWorld, uCamPos);
+    return result;
+}
+
+vec3 shadeSurface(HitResult info, vec3 rd) {
+    vec3 baseColor = blockColor(info.blockId);
+    if (length(baseColor) <= 1e-5) {
+        baseColor = vec3(0.5);
+    }
+
+    vec3 sunDir = normalize(uSunDir);
+    float diffuse = max(dot(info.normal, sunDir), 0.0);
+    float ambient = 0.2;
+    vec3 lit = baseColor * (ambient + diffuse * 0.8);
+
+    float fogDensity = 0.02;
+    float fogFactor = exp(-info.distance * fogDensity);
+    vec3 sky = skyColor(rd);
+    return mix(sky, lit, clamp(fogFactor, 0.0, 1.0));
+}
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    if (gid.x >= uResolution.x || gid.y >= uResolution.y) {
+        return;
+    }
+
+    vec2 pixel = (vec2(gid) + vec2(0.5)) / vec2(uResolution);
+    vec2 ndc = pixel * 2.0 - 1.0;
+
+    vec4 pNear = uInvProj * vec4(ndc, -1.0, 1.0);
+    vec4 pFar  = uInvProj * vec4(ndc, 1.0, 1.0);
+    pNear /= pNear.w;
+    pFar  /= pFar.w;
+
+    vec3 rd = normalize((uInvView * vec4(normalize(pFar.xyz - pNear.xyz), 0.0)).xyz);
+    vec3 roWorld = uCamPos;
+    vec3 roLocal = roWorld - vec3(uRegionOrigin);
+
+    vec3 invDir = 1.0 / rd;
+    vec3 tMin = (vec3(0.0) - roLocal) * invDir;
+    vec3 tMax = (vec3(uWorldSize) - roLocal) * invDir;
+    vec3 t1 = min(tMin, tMax);
+    vec3 t2 = max(tMin, tMax);
+    float tEnter = max(max(t1.x, t1.y), t1.z);
+    float tExit  = min(min(t2.x, t2.y), t2.z);
+
+    vec3 color = skyColor(rd);
+    if (tExit >= max(tEnter, 0.0)) {
+        HitResult hit = marchVoxelWorld(roLocal, rd, tEnter, tExit);
+        if (hit.hit) {
+            color = shadeSurface(hit, rd);
+        }
+    }
+
+    imageStore(uOutput, gid, vec4(color, 1.0));
+}
