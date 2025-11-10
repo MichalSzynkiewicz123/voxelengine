@@ -246,21 +246,26 @@ public class Chunk {
     }
 
     private void placeRock(Random rng, int x, int y, int z) {
-        int radius = 1 + rng.nextInt(2);
-        for (int dy = 0; dy <= radius; dy++) {
+        int width = 2;
+        int depth = 2;
+        int height = 2;
+        for (int dy = 0; dy < height; dy++) {
             int ay = y + dy;
-            if (ay < 0 || ay >= SY) continue;
-            for (int dx = -radius; dx <= radius; dx++) {
+            if (ay < 0 || ay >= SY) {
+                continue;
+            }
+            for (int dx = 0; dx < width; dx++) {
                 int ax = x + dx;
-                if (ax < 0 || ax >= SX) continue;
-                for (int dz = -radius; dz <= radius; dz++) {
+                if (ax < 0 || ax >= SX) {
+                    continue;
+                }
+                for (int dz = 0; dz < depth; dz++) {
                     int az = z + dz;
-                    if (az < 0 || az >= SZ) continue;
-                    int dist2 = dx * dx + dz * dz + dy * dy;
-                    if (dist2 <= radius * radius + rng.nextInt(2)) {
-                        if (get(ax, ay, az) == Blocks.AIR) {
-                            set(ax, ay, az, Blocks.STONE);
-                        }
+                    if (az < 0 || az >= SZ) {
+                        continue;
+                    }
+                    if (get(ax, ay, az) == Blocks.AIR) {
+                        set(ax, ay, az, Blocks.STONE);
                     }
                 }
             }
