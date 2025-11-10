@@ -1,11 +1,9 @@
 package com.example.voxelrt.app;
 
 /**
- * Entry point for the standalone voxel renderer application.
- * <p>
- * The class simply bootstraps the {@link Engine} which owns the game loop and render state.
+ * Entry point that launches the minimal ray marching demo.
  */
-public class Main {
+public final class Main {
     private Main() {
     }
 
